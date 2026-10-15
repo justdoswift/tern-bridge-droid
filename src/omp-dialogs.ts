@@ -46,6 +46,13 @@ interface ModalControls<T> {
   replace: (component: Component) => void;
 }
 
+/** The stock selector's picker is already a sheet; another overlay leaves an empty modal above it. */
+class DroidModalSelector extends HookSelectorComponent {
+  nativeSheet(cx: DescribeContext): boolean {
+    return cx.supports('picker');
+  }
+}
+
 /**
  * Keep omp's picker, preview, navigation and events intact. Droid has no session-file
  * size, so the native data projection omits that fact instead of claiming zero bytes.
@@ -188,7 +195,7 @@ export class DroidDialogs {
           if (!controls.active() || current !== generation) return;
           this.options.onError(error);
           const retry = this.options.locale() === 'zh-CN' ? '重试' : 'Retry';
-          controls.replace(new HookSelectorComponent(
+          controls.replace(new DroidModalSelector(
             `${text.sessions}\n${error instanceof Error ? error.message : String(error)}`,
             [retry, text.cancel],
             selected => {
@@ -211,7 +218,7 @@ export class DroidDialogs {
     const offered = choices.map(choice => ({ ...choice }));
     return this.showModal<string>(controls => {
       const rows = this.choiceRows(offered);
-      return new HookSelectorComponent(title, rows, label => {
+      return new DroidModalSelector(title, rows, label => {
         if (!controls.active()) return;
         const index = rows.findIndex(row => row.label === label);
         const choice = offered[index];

@@ -50,11 +50,13 @@ tern plugin link ./artifacts/package/tern-bridge-droid
 
 ## 使用
 
-在 Tern 命令面板中选择：
+在 Tern 窗口按 **⌘K** 打开命令面板（macOS 默认键位），搜索 `Droid`，然后选择：
 
 - **Droid：新建原生对话 / Droid: New native conversation**
 - **Droid：恢复历史会话 / Droid: Resume a conversation**
 - **Droid：在右侧分屏打开 / Droid: Open in a right split**
+
+日常启动不使用 `tern ctl palette ...`，也不需要 `tern serve` 或开发控制 socket。插件目前不接管 Shell 中的 `droid` 命令，直接输入仍会启动官方 CLI。
 
 新建对话使用当前本机窗格的工作目录；恢复会话使用 Droid 已保存的工作目录。恢复会话同时加载历史消息，不只恢复模型上下文。
 

@@ -1589,6 +1589,11 @@ function dictionary(locale) {
 }
 
 // src/omp-dialogs.ts
+var DroidModalSelector = class extends HookSelectorComponent {
+  nativeSheet(cx) {
+    return cx.supports("picker");
+  }
+};
 var DroidSessionSelector = class extends SessionSelectorComponent {
   missingDates = /* @__PURE__ */ new Set();
   loadingMessage;
@@ -1719,7 +1724,7 @@ var DroidDialogs = class {
           if (!controls.active() || current !== generation) return;
           this.options.onError(error);
           const retry = this.options.locale() === "zh-CN" ? "\u91CD\u8BD5" : "Retry";
-          controls.replace(new HookSelectorComponent(
+          controls.replace(new DroidModalSelector(
             `${text.sessions}
 ${error instanceof Error ? error.message : String(error)}`,
             [retry, text.cancel],
@@ -1748,7 +1753,7 @@ ${error instanceof Error ? error.message : String(error)}`,
     const offered = choices.map((choice) => ({ ...choice }));
     return this.showModal((controls) => {
       const rows = this.choiceRows(offered);
-      return new HookSelectorComponent(title, rows, (label) => {
+      return new DroidModalSelector(title, rows, (label) => {
         if (!controls.active()) return;
         const index = rows.findIndex((row) => row.label === label);
         const choice = offered[index];
