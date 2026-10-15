@@ -16,11 +16,16 @@ export interface ChatMessage {
   /** Display lifecycle only: true during deltas, false between blocks, absent once settled/restored. */
   streaming?: boolean;
 }
+export interface InputImage {
+  data: string;
+  mimeType: 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp';
+}
 export interface ModelChoice {
   id: string;
   label: string;
   reasoningEfforts: string[];
   defaultReasoningEffort?: string;
+  noImageSupport?: boolean;
 }
 export interface SettingsView {
   modelId: string;
@@ -82,7 +87,7 @@ export interface BridgeBackend {
   open(sessionId?: string): Promise<void>;
   sessions(all: boolean): Promise<SessionSummary[]>;
   contextDetails(): Promise<ContextDetails>;
-  send(text: string, onAccepted: () => void): Promise<void>;
+  send(text: string, onAccepted: () => void, images?: readonly InputImage[]): Promise<void>;
   interrupt(): Promise<void>;
   resolveApproval(requestId: string, value: string, editedSpecContent?: string): void;
   resolveQuestion(requestId: string, answers: QuestionAnswer[] | null): void;

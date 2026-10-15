@@ -3,7 +3,7 @@ import {
   AutonomyLevel, DroidClient, ProcessTransport, ReasoningEffort, DroidInteractionMode,
   ToolConfirmationOutcome, ContextBreakdownResultSchema, listSessions, resolveExecCoreDeps,
 } from '@factory/droid-sdk/node';
-import type { BridgeBackend, BackendOptions, BackendState, ContextDetails, ModelChoice, PendingApproval, PendingQuestion, QuestionAnswer, RewindPlan, SessionSummary, SettingsPatch, SettingsView } from './contracts.js';
+import type { BridgeBackend, BackendOptions, BackendState, ContextDetails, InputImage, ModelChoice, PendingApproval, PendingQuestion, QuestionAnswer, RewindPlan, SessionSummary, SettingsPatch, SettingsView } from './contracts.js';
 import { SessionLock, SessionLockError } from './session-lock.js';
 import { Transcript, record } from './transcript.js';
 
@@ -57,19 +57,22 @@ function result(response: unknown): Record<string, unknown> {
   return record(envelope.result);
 }
 
-export function normalizeModels(value: unknown, selected?: SettingsView): ModelChoice[] {
+export function normalizeModels(value: unknown, selected?: SettingsView, previous: readonly ModelChoice[] = []): ModelChoice[] {
   const models = new Map<string, ModelChoice>();
   if (Array.isArray(value)) for (const item of value) {
     const model = record(item);
     if (typeof model.id !== 'string' || model.disabled === true) continue;
+    const noImageSupport = typeof model.noImageSupport === 'boolean' ? model.noImageSupport
+      : (models.get(model.id) ?? previous.find(item => item.id === model.id))?.noImageSupport;
     models.set(model.id, {
       id: model.id,
       label: typeof model.displayName === 'string' ? model.displayName : model.id,
       reasoningEfforts: Array.isArray(model.supportedReasoningEfforts) ? model.supportedReasoningEfforts.filter((effort): effort is string => typeof effort === 'string') : [],
       ...(typeof model.defaultReasoningEffort === 'string' ? { defaultReasoningEffort: model.defaultReasoningEffort } : {}),
+      ...(noImageSupport !== undefined ? { noImageSupport } : {}),
     });
   }
-  if (selected?.modelId && !models.has(selected.modelId)) models.set(selected.modelId, { id: selected.modelId, label: selected.modelId, reasoningEfforts: selected.reasoningEffort ? [selected.reasoningEffort] : [] });
+  if (selected?.modelId && !models.has(selected.modelId)) models.set(selected.modelId, previous.find(model => model.id === selected.modelId) ?? { id: selected.modelId, label: selected.modelId, reasoningEfforts: selected.reasoningEffort ? [selected.reasoningEffort] : [] });
   return [...models.values()];
 }
 
@@ -84,6 +87,22 @@ function settings(value: unknown, previous?: SettingsView): SettingsView {
       ? { availableAutonomyLevels: source.availableAutonomyLevels.filter((level): level is string => typeof level === 'string' && Object.values(AutonomyLevel).includes(level as AutonomyLevel)) }
       : previous?.availableAutonomyLevels !== undefined ? { availableAutonomyLevels: previous.availableAutonomyLevels } : {}),
   };
+}
+
+function imageSources(images: readonly InputImage[] | undefined) {
+  if (images === undefined) return undefined;
+  const invalid = 'Image attachments must contain valid base64 data in JPEG, PNG, GIF or WebP format.';
+  if (!Array.isArray(images)) throw new BridgeFailure(invalid);
+  const sources: { type: 'base64'; data: string; mediaType: InputImage['mimeType'] }[] = [];
+  for (const image of images) {
+    const { data, mimeType } = record(image);
+    if (typeof data !== 'string' || !data.length || data.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(data) ||
+        (mimeType !== 'image/jpeg' && mimeType !== 'image/png' && mimeType !== 'image/gif' && mimeType !== 'image/webp')) throw new BridgeFailure(invalid);
+    sources.push(Object.freeze({ type: 'base64', data, mediaType: mimeType }));
+  }
+  // Copy only descriptors: strings are immutable and the base64 bytes stay shared.
+  Object.freeze(sources);
+  return sources;
 }
 
 const PENDING_SNAPSHOT_NOTICE = 'Droid reported a pending prompt without reissuing its live request. This session is read-only until a live request arrives or Stop confirms idle. Otherwise answer it in its original owner and reopen the session.';
@@ -178,11 +197,15 @@ export class DroidBridge implements BridgeBackend {
     }
   }
 
-  async send(text: string, onAccepted: () => void): Promise<void> {
+  async send(text: string, onAccepted: () => void, images?: readonly InputImage[]): Promise<void> {
     const scope = this.ready();
-    if (!text.trim()) throw new BridgeFailure('Enter a message before sending.');
+    const sources = imageSources(images);
+    if (!text.trim() && !sources?.length) throw new BridgeFailure('Enter a message or attach an image before sending.');
     if (this.active || this.operation || this.state.phase !== 'idle') throw new BridgeFailure('Droid already has active work. Stop it or wait before sending another message.');
     if (scope.unansweredSnapshots.size) throw new BridgeFailure(PENDING_SNAPSHOT_NOTICE);
+    if (sources?.length && this.state.models.find(model => model.id === this.state.session?.settings.modelId)?.noImageSupport === true) {
+      throw new BridgeFailure('The selected Droid model does not support image attachments. Choose an image-capable model or remove the images.');
+    }
     const { promise: done, resolve: resolveDone, reject: rejectDone } = Promise.withResolvers<void>();
     // The transport may fail while addUserMessage is still awaiting its response.
     // Observe the terminal promise immediately; send still propagates its failure.
@@ -198,7 +221,7 @@ export class DroidBridge implements BridgeBackend {
     this.state.error = null; this.state.notice = null; this.state.phase = 'running'; this.changed();
     try {
       await Promise.race([
-        scope.client.addUserMessage({ text, messageId: turn.messageId }, turn.requestId).then(result),
+        scope.client.addUserMessage({ text, messageId: turn.messageId, ...(sources?.length ? { images: sources } : {}) }, turn.requestId).then(result),
         done,
       ]);
       await done;
@@ -372,7 +395,7 @@ export class DroidBridge implements BridgeBackend {
       this.install(scope, response, !sessionId);
       try {
         const discovered = result(await scope.client.listModels());
-        if (this.scope === scope) this.state.models = normalizeModels(discovered.models, this.state.session?.settings);
+        if (this.scope === scope) this.state.models = normalizeModels(discovered.models, this.state.session?.settings, this.state.models);
       } catch (error) {
         if (this.scope === scope) this.state.notice = failure(error, 'Discover models').message;
       }
@@ -411,7 +434,7 @@ export class DroidBridge implements BridgeBackend {
       cwd: typeof response.cwd === 'string' ? response.cwd : typeof session.cwd === 'string' ? session.cwd : created ? this.options.cwd : '',
       settings: settings(response.settings),
     };
-    this.state.models = normalizeModels(response.availableModels, this.state.session.settings);
+    this.state.models = normalizeModels(response.availableModels, this.state.session.settings, this.state.models);
     this.state.context = null; this.state.usage = null;
     this.usage(response.tokenUsage);
     scope.remoteBusy = typeof response.workingState === 'string'
@@ -455,7 +478,7 @@ export class DroidBridge implements BridgeBackend {
       const turn = this.active;
       if (turn?.scope === scope && !turn.accepted && typeof message.id === 'string' && message.role === 'user' &&
           message.visibility !== 'llm_only' && message.isUserVisible !== false && message.hiddenFromUserViews !== true &&
-          Array.isArray(message.content) && message.content.some(value => record(value).type === 'text') &&
+          Array.isArray(message.content) && message.content.some(value => record(value).type === 'text' || record(value).type === 'image') &&
           (message.id === turn.messageId || event.requestId === turn.requestId)) {
         turn.accepted = true;
         // Acceptance is tied to Droid's persisted message, never the send RPC.
@@ -463,7 +486,7 @@ export class DroidBridge implements BridgeBackend {
       }
     } else if (event.type === 'settings_updated' && this.state.session) {
       this.state.session.settings = settings(event.settings, this.state.session.settings);
-      this.state.models = normalizeModels(this.state.models.map(model => ({ id: model.id, displayName: model.label, supportedReasoningEfforts: model.reasoningEfforts, defaultReasoningEffort: model.defaultReasoningEffort })), this.state.session.settings);
+      this.state.models = normalizeModels(this.state.models.map(model => ({ id: model.id, displayName: model.label, supportedReasoningEfforts: model.reasoningEfforts, defaultReasoningEffort: model.defaultReasoningEffort, noImageSupport: model.noImageSupport })), this.state.session.settings);
     } else if (event.type === 'session_title_updated' && this.state.session && typeof event.title === 'string') this.state.session.title = event.title;
     else if (event.type === 'session_working_directory_changed' && this.state.session && typeof event.cwd === 'string') this.state.session.cwd = event.cwd;
     else if (event.type === 'session_token_usage_changed') this.usage(event.tokenUsage);

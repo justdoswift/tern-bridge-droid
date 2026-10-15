@@ -29,6 +29,7 @@ export class DroidTodoHud extends Text {
     }, undefined, stableKey(sessionId!)) : EMPTY_NODE;
     this.setText(tasks?.map(task => `${task.status === 'completed' ? '[x]' : task.status === 'in_progress' ? '[>]' : '[ ]'} ${task.content}`).join('\n') ?? '');
   }
+  hasTasks(): boolean { return this.native !== EMPTY_NODE; }
 
   override describe(): NativeNode { return this.native; }
 }

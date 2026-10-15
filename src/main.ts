@@ -17,6 +17,9 @@ import type { Locale } from './contracts.js';
 import { DroidTranscript } from './omp-transcript.js';
 import { DroidDialogs } from './omp-dialogs.js';
 import { DroidTodoHud } from './omp-todos.js';
+import { DroidWorkingHud } from './omp-working.js';
+import { isDroidWorking } from './work-state.js';
+import { DroidImageComposer, imageAdmissionError, type ImageSubmission } from './omp-images.js';
 import { dictionary } from './i18n.js';
 
 const { values } = parseArgs({ options: {
@@ -61,6 +64,7 @@ async function run(): Promise<void> {
   let closing = false;
   let scheduled = false;
   let submitting = false;
+  let terminalProgress = false;
   let pendingNew: string | null = null;
   let uiError: string | null = null;
   let observedBackendError: string | null = null;
@@ -71,7 +75,6 @@ async function run(): Promise<void> {
   let facts: ComposerFacts;
   let factsKey = '';
   let expanded = false;
-  let draftRevision = 0;
   let autocompleteCwd = '';
   const notice = new Text('');
   const identity = new Text('Droid');
@@ -79,10 +82,10 @@ async function run(): Promise<void> {
   const backend = new DroidBridge({ cwd, dataDir, execPath: values.droid ?? (typeof preferences.droidPath === 'string' ? preferences.droidPath : undefined), onChange: changed });
   const transcript = new DroidTranscript(composer.ui, cwd);
   const todos = new DroidTodoHud();
+  const working = new DroidWorkingHud(todos);
   const dialogs = new DroidDialogs(composer, backend, { locale: () => locale, onError: report, onChange: changed, openSession: id => open(id) });
   composer.setHeaderExtras([identity], []);
   composer.editor.magicKeywordsEnabledOverride = false;
-  composer.editor.onChange = () => { draftRevision++; };
   composer.editor.composerState = () => ({ running: busy(), thinking: backend.state.session?.settings.reasoningEffort, title: backend.state.session?.title || undefined });
   composer.editor.composerFacts = {
     describeComposerFacts: () => facts,
@@ -90,16 +93,15 @@ async function run(): Promise<void> {
       if (event.type === 'action' && event.act.startsWith('status.')) void perform(() => command(event.act.slice(7)));
     },
   };
-  composer.editor.onSubmit = message => {
-    // omp clears its editor synchronously on submit. Restore the submitted draft
-    // before a frame can paint, then clear only when Droid confirms persistence.
-    composer.editor.setText(message);
-    void perform(() => submit(message));
-  };
+  const images = new DroidImageComposer(composer.editor, {
+    locale: () => locale, currentSession: () => backend.state.session?.id ?? null,
+    cwd: () => backend.state.session?.cwd ?? cwd, onChange: changed, onError: report,
+    onSubmit: submission => { void perform(() => submit(submission)); },
+  });
   composer.editor.onEscape = () => { void perform(() => busy() ? backend.interrupt() : Promise.resolve()); };
   composer.editor.onClear = () => {
     if (busy()) void perform(() => backend.interrupt());
-    else composer.editor.setText('');
+    else composer.editor.clearDraft();
   };
   composer.editor.onExit = () => { void perform(() => command('quit')); };
   composer.editor.onSelectModel = composer.editor.onSelectModelTemporary = () => { void perform(() => command('model')); };
@@ -115,6 +117,7 @@ async function run(): Promise<void> {
     { name: 'rename', description: 'Droid: rename conversation' }, { name: 'fork', description: 'Droid: fork conversation' },
     { name: 'compact', description: 'Droid: compact context (may use model quota)' }, { name: 'rewind', description: 'Droid: inspect rewind' },
     { name: 'context', description: 'Droid: context usage breakdown' },
+    { name: 'attach', description: 'Droid: attach a local image' },
     { name: 'retry', description: 'Droid: reconnect without replay' }, { name: 'language', description: 'Bridge: 中文 / English' },
     { name: 'help', description: 'Bridge: conversation actions' }, { name: 'quit', description: 'Bridge: close client' },
   ];
@@ -125,7 +128,7 @@ async function run(): Promise<void> {
   }
   function report(error: unknown): void {
     if (closing) return;
-    uiError = error instanceof Error ? error.message : String(error);
+    uiError = imageAdmissionError(error, locale) ?? (error instanceof Error ? error.message : String(error));
     pendingNew = null;
     changed();
   }
@@ -153,6 +156,11 @@ async function run(): Promise<void> {
     });
   }
   function update(): void {
+    const active = isDroidWorking(backend.state);
+    if (terminalProgress !== active) {
+      terminalProgress = active;
+      composer.ui.terminal.setProgress(active);
+    }
     const b = backend.state;
     const t = dictionary(locale);
     const activeCwd = b.session?.cwd || cwd;
@@ -171,9 +179,10 @@ async function run(): Promise<void> {
     notice.setText(b.notice ?? '');
     transcript.sync(b);
     todos.sync(b, locale);
+    working.sync(b, locale);
     const prompt = dialogs.syncPrompts();
     composer.editor.disableSubmit = submitting || ['connecting', 'running', 'approval', 'question', 'stopping'].includes(b.phase) || b.needsInterrupt;
-    composer.setRuntimeChildren([transcript.container, ...(banner ? [banner] : []), ...(b.notice ? [notice] : []), todos, prompt ?? composer.editor]);
+    composer.setRuntimeChildren([transcript.container, ...(banner ? [banner] : []), ...(b.notice ? [notice] : []), working, prompt ?? composer.editor]);
     if (prompt !== mountedPrompt) {
       mountedPrompt = prompt;
       if (!dialogs.hasOverlay()) composer.ui.setFocus(prompt ?? composer.editor);
@@ -183,16 +192,18 @@ async function run(): Promise<void> {
     const key = JSON.stringify([locale, b.phase, b.context, b.usage, b.session?.title, selected?.label, settings]);
     if (key !== factsKey) {
       factsKey = key;
-      const segments = [
+      // Keep recovery reachable when native width compression hides optional extras.
+      const segments = ['error', 'disconnected'].includes(b.phase)
+        ? [{ key: 'retry', label: t.reconnect, title: t.reconnectHint }] : [
         { key: 'sessions', label: t.sessions, title: t.sessions }, { key: 'more', label: t.more, title: t.more },
         { key: 'mode', label: settings?.interactionMode || t.mode, title: `${t.mode}: ${settings?.interactionMode || t.unknown}` },
         { key: 'autonomy', label: settings?.autonomyLevel || t.autonomy, title: `${t.autonomy}: ${settings?.autonomyLevel || t.unknown}` },
-        ...(['error', 'disconnected'].includes(b.phase) ? [{ key: 'retry', label: t.reconnect, title: t.reconnectHint }] : []),
+        { key: 'attach', label: t.attachImage, title: t.attachImageHint },
       ];
       facts = {
         context: node('meter', { role: 'omp.composer.context', style: 'bar', actions: { click: 'status.context' }, aria: t.context,
           value: b.context && b.context.limit > 0 ? Math.min(1, b.context.used / b.context.limit) : null,
-          ...(b.context ? { label: `${Math.round(b.context.used / b.context.limit * 100)}%`, total: b.context.limit.toLocaleString(locale) } : {}),
+          ...(b.context && b.context.limit > 0 ? { label: `${Math.round(b.context.used / b.context.limit * 100)}%` } : {}),
           title: `${t.context}: ${b.context ? `${b.context.used.toLocaleString(locale)} / ${b.context.limit.toLocaleString(locale)}` : t.unknown}` }, undefined, 'context'),
         model: { spans: [span(`Droid · ${selected?.label || settings?.modelId || t.default}`)], title: t.model },
         extras: node('row', { role: 'omp.composer.extras', grow: 1, gap: 'xs', align: 'center', wrap: true },
@@ -206,22 +217,22 @@ async function run(): Promise<void> {
   async function open(id?: string): Promise<void> {
     pendingNew = null;
     if (busy()) throw new Error(text('请先停止当前任务，再切换会话。', 'Stop the active turn before switching conversations.'));
-    const previousDraft = composer.editor.getExpandedText();
-    composer.editor.setText('');
-    const clearedRevision = draftRevision;
-    try { await backend.open(id); }
-    catch (error) {
-      if (draftRevision === clearedRevision) composer.editor.setText(previousDraft);
-      throw error;
+    if (id !== undefined && id === backend.state.session?.id) {
+      await backend.open(id);
+      return;
     }
+    const transition = images.beginSessionChange();
+    try { await backend.open(id); transition.complete(); }
+    catch (error) { transition.rollback(); throw error; }
     // Input typed during connection belongs to the selected session. Live backend
     // prompts and the selector own focus; opening never redirects it to a hidden editor.
   }
-  async function submit(message: string): Promise<void> {
-    if (!message.trim()) return;
-    const match = /^\/([a-z-]+)(?:\s+([\s\S]*))?$/.exec(message);
-    if (match?.[1] && commands.some(item => item.name === match[1])) {
-      if (composer.editor.getExpandedText() === message) composer.editor.setText('');
+  async function submit(submission: ImageSubmission): Promise<void> {
+    const message = submission.text;
+    if (!message.trim() && !submission.images.length) return;
+    const match = !submission.images.length && /^\/([a-z-]+)(?:\s+([\s\S]*))?$/.exec(message);
+    if (match && match[1] && commands.some(item => item.name === match[1])) {
+      images.accept(submission);
       await command(match[1], match[2]);
       return;
     }
@@ -229,11 +240,7 @@ async function run(): Promise<void> {
     submitting = true;
     changed();
     try {
-      await backend.send(message, () => {
-        composer.editor.addToHistory(message);
-        if (composer.editor.getExpandedText() === message) composer.editor.setText('');
-        changed();
-      });
+      await backend.send(message, () => { images.accept(submission); changed(); }, submission.images);
     } finally { submitting = false; changed(); }
   }
   async function command(name: string, argument?: string): Promise<void> {
@@ -241,6 +248,11 @@ async function run(): Promise<void> {
     switch (name) {
       case 'sessions': return dialogs.sessions();
       case 'context': return dialogs.context();
+      case 'attach': {
+        const path = argument ?? await dialogs.input(t.attachImage, undefined, t.attachImageHint);
+        if (path?.trim()) await images.addPath(path);
+        return;
+      }
       case 'resume': return argument?.trim() ? open(argument.trim()) : dialogs.sessions();
       case 'more': case 'help': {
         const selected = await dialogs.choose(text('Droid 会话操作', 'Droid conversation actions'), commands.filter(item => item.name !== 'help').map(item => ({ value: item.name, label: `/${item.name}`, description: item.description })));
@@ -325,7 +337,9 @@ async function run(): Promise<void> {
     if (closing) return;
     closing = true;
     pendingNew = null;
+    composer.ui.terminal.setProgress(false);
     dialogs.dispose();
+    images.dispose();
     try { await backend.close(); }
     finally {
       nativeChange(); transcript.dispose(); stopSharedSpinnerTicker(); composer.stop(); ended.resolve();

@@ -6,6 +6,7 @@ import test from 'node:test';
 import type { TestContext } from 'node:test';
 import { DroidBridge, normalizeModels } from '../src/backend.js';
 import type { BridgeClient, BridgeRuntime } from '../src/backend.js';
+import type { InputImage } from '../src/contracts.js';
 import { record } from '../src/transcript.js';
 
 interface Snapshot {
@@ -17,7 +18,7 @@ interface Snapshot {
   workingState?: string;
 }
 interface PendingSnapshot extends Snapshot { pendingPermissions: { requestId: string }[] }
-interface Sent { text: string; messageId: string; requestId: string }
+interface Sent { text: string; messageId: string; requestId: string; images?: { type: 'base64'; data: string; mediaType: InputImage['mimeType'] }[] }
 
 class FakeClient {
   isConnected = true;
@@ -36,6 +37,7 @@ class FakeClient {
   interrupts = 0;
   settingUpdates: object[] = [];
   rewinds: unknown[] = [];
+  modelChoices: unknown[] = [{ id: 'ordinary', displayName: 'Ordinary model', supportedReasoningEfforts: ['low', 'high'], defaultReasoningEffort: 'low' }];
   snapshots: Record<string, Snapshot> = {
     original: { session: { title: 'Saved title', messages: [{ id: 'restored-user', role: 'user', content: [{ type: 'text', text: 'Saved prompt' }] }] }, cwd: '/actual/saved/project', settings: { modelId: 'custom:selected', reasoningEffort: 'high', autonomyLevel: 'low', interactionMode: 'spec' }, availableModels: [] },
   };
@@ -61,7 +63,7 @@ class FakeClient {
     if (!snapshot) throw new Error('missing test snapshot');
     return { result: structuredClone(snapshot) };
   }
-  async listModels() { return { result: { models: [{ id: 'ordinary', displayName: 'Ordinary model', supportedReasoningEfforts: ['low', 'high'], defaultReasoningEffort: 'low' }] } }; }
+  async listModels() { return { result: { models: this.modelChoices } }; }
   async getContextStats() { return { result: { used: 120, limit: 200_000 } }; }
   async getContextBreakdown(): Promise<unknown> {
     if (this.breakdownResponse) return this.breakdownResponse;
@@ -69,7 +71,7 @@ class FakeClient {
     error.name = 'ProtocolError';
     throw error;
   }
-  async addUserMessage(params: { text: string; messageId: string }, requestId: string) {
+  async addUserMessage(params: Omit<Sent, 'requestId'>, requestId: string) {
     const sent = { ...params, requestId }; this.sent.push(sent); this.added.resolve(sent);
     return this.responseGate ? await this.responseGate : { result: {} };
   }
@@ -114,12 +116,12 @@ class FakeClient {
   }
 }
 
-async function fixture(t: TestContext, resume = true) {
+async function fixture(t: TestContext, resume = true, configure?: (client: FakeClient) => void) {
   const dataDir = await mkdtemp(join(tmpdir(), 'tern-bridge-backend-'));
   const clients: FakeClient[] = [];
   const listings: unknown[] = [];
   const sdk: BridgeRuntime = {
-    create() { const client = new FakeClient(); clients.push(client); return { client: client as unknown as BridgeClient, connect: async () => { client.isConnected = true; } }; },
+    create() { const client = new FakeClient(); configure?.(client); clients.push(client); return { client: client as unknown as BridgeClient, connect: async () => { client.isConnected = true; } }; },
     async listSessions(options) { listings.push(options); return []; },
   };
   const bridge = new DroidBridge({ cwd: '/host/project', dataDir, onChange() {} }, sdk);
@@ -134,7 +136,10 @@ function permission(id: string, values = ['proceed_once', 'proceed_always', 'can
 }
 
 function accepted(client: FakeClient, sent: Sent) {
-  client.emit({ type: 'create_message', requestId: sent.requestId, message: { id: sent.messageId, role: 'user', content: [{ type: 'text', text: sent.text }] } });
+  client.emit({ type: 'create_message', requestId: sent.requestId, message: { id: sent.messageId, role: 'user', content: [
+    ...(sent.text ? [{ type: 'text', text: sent.text }] : []),
+    ...(sent.images?.map(source => ({ type: 'image', source })) ?? []),
+  ] } });
 }
 
 function complete(client: FakeClient, turnId: string, reason = 'completed') {
@@ -190,6 +195,143 @@ test('terminal result releases a send even when its request response is delayed'
   accepted(client, sent); complete(client, sent.messageId); await send;
   assert.equal(bridge.state.phase, 'idle');
   gate.resolve({ result: {} });
+});
+
+const png: InputImage = { data: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aP1sAAAAASUVORK5CYII=', mimeType: 'image/png' };
+const gif: InputImage = { data: 'R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', mimeType: 'image/gif' };
+
+test('image-only sends retain the active guard and acknowledge only visible persisted user-image identity', async t => {
+  const { bridge, client } = await fixture(t);
+  let acknowledgements = 0;
+  const send = bridge.send('', () => { acknowledgements++; }, [png]);
+  const sent = await client.added.promise;
+  assert.equal(sent.text, '');
+  assert.equal(acknowledgements, 0, 'the RPC result alone does not clear the draft');
+  await assert.rejects(bridge.send('', () => undefined, [gif]), /active work/);
+  const imageMessage = { id: sent.messageId, role: 'user', content: [{ type: 'image', source: sent.images?.[0] }] };
+  client.emit({ type: 'create_message', requestId: sent.requestId, message: imageMessage }, 'foreign-child');
+  client.emit({ type: 'create_message', requestId: sent.requestId, message: { ...imageMessage, visibility: 'llm_only' } });
+  client.emit({ type: 'create_message', message: { ...imageMessage, id: 'unrelated-user-image' } });
+  client.emit({ type: 'create_message', requestId: sent.requestId, message: { ...imageMessage, content: [{ type: 'tool_result', content: 'not a prompt' }] } });
+  assert.equal(acknowledgements, 0);
+  accepted(client, sent); accepted(client, sent);
+  assert.equal(acknowledgements, 1);
+  assert.deepEqual(bridge.state.messages.find(message => message.id === sent.messageId)?.blocks, [
+    { id: `${sent.messageId}:0`, kind: 'image', data: png.data, mime: png.mimeType },
+  ]);
+  complete(client, sent.messageId);
+  await send;
+  assert.equal(bridge.state.phase, 'idle');
+});
+
+test('pending sends snapshot ordered image descriptors without mutating the editable input', async t => {
+  const { bridge, client } = await fixture(t);
+  const gate = Promise.withResolvers<unknown>(); client.responseGate = gate.promise;
+  const images = [{ ...png }, { ...gif }];
+  const send = bridge.send('Compare these images', () => undefined, images);
+  const sent = await client.added.promise;
+  images[0]!.data = gif.data;
+  images[0]!.mimeType = 'image/webp';
+  images.reverse(); images.push({ ...png });
+  assert.equal(sent.text, 'Compare these images');
+  assert.deepEqual(sent.images, [
+    { type: 'base64', data: png.data, mediaType: 'image/png' },
+    { type: 'base64', data: gif.data, mediaType: 'image/gif' },
+  ]);
+  assert.ok(Object.isFrozen(sent.images));
+  assert.ok(sent.images?.every(image => Object.isFrozen(image)));
+  accepted(client, sent); complete(client, sent.messageId);
+  await send;
+  gate.resolve({ result: {} });
+  assert.equal(client.sent.length, 1);
+});
+
+test('explicit model image restrictions survive discovery, settings notifications and sparse reloads without changing sessions or drafts', async t => {
+  const { bridge, client } = await fixture(t, true, client => {
+    client.snapshots.original!.availableModels = [{ id: 'custom:selected', noImageSupport: true }];
+  });
+  assert.equal(bridge.state.models.find(model => model.id === 'custom:selected')?.noImageSupport, true);
+  client.emit({ type: 'settings_updated', settings: { reasoningEffort: 'low' } });
+  client.snapshots.original!.availableModels = [];
+  await bridge.rename('Still image-incompatible');
+  const plan = await bridge.prepareRewind('restored-user');
+  const before = structuredClone(bridge.state);
+  let acknowledgements = 0;
+  await assert.rejects(bridge.send('Keep this draft', () => { acknowledgements++; }, [png]), /does not support image attachments/);
+  assert.deepEqual(bridge.state, before);
+  assert.equal(acknowledgements, 0);
+  assert.equal(client.sent.length, 0);
+  assert.equal(client.settingUpdates.length, 0);
+  await bridge.rewind(plan, false);
+  assert.equal(bridge.state.session?.id, 'rewound', 'early rejection does not invalidate an inspected rewind plan');
+  const send = bridge.send('Text remains supported', () => undefined);
+  const sent = await client.added.promise;
+  accepted(client, sent); complete(client, sent.messageId); await send;
+});
+
+test('malformed and unsupported attachments reject without sending, accepting or mutating session state', async t => {
+  const { bridge, client } = await fixture(t);
+  const before = structuredClone(bridge.state);
+  let acknowledgements = 0;
+  for (const images of [
+    null, {}, [null], [undefined], new Array<unknown>(1),
+    [{ ...png, data: '' }], [{ ...png, data: 'not base64' }],
+    [{ ...png, data: 'abc' }], [{ ...png, data: '====' }],
+    [{ ...png, data: `data:image/png;base64,${png.data}` }],
+    [{ ...png, mimeType: 'image/svg+xml' }], [{ ...png, mimeType: 'application/pdf' }],
+  ]) {
+    await assert.rejects(bridge.send('Keep this draft', () => { acknowledgements++; }, images as readonly InputImage[]), /valid base64/);
+  }
+  await assert.rejects(bridge.send('  ', () => { acknowledgements++; }, []), /message or attach an image/);
+  assert.equal(client.sent.length, 0);
+  assert.equal(acknowledgements, 0);
+  assert.deepEqual(bridge.state, before);
+});
+
+test('transport loss never replays images or acknowledges an unpersisted image draft, even with a late RPC result', async t => {
+  for (const persisted of [false, true]) await t.test(persisted ? 'after persistence' : 'before persistence', async t => {
+    const { bridge, client, clients } = await fixture(t);
+    const gate = Promise.withResolvers<unknown>(); client.responseGate = gate.promise;
+    let acknowledgements = 0;
+    const send = bridge.send('', () => { acknowledgements++; }, [png]);
+    const rejected = assert.rejects(send, /connection ended/);
+    const sent = await client.added.promise;
+    if (persisted) accepted(client, sent);
+    client.crash();
+    await rejected;
+    gate.resolve({ result: {} });
+    accepted(client, sent);
+    assert.equal(acknowledgements, persisted ? 1 : 0);
+    assert.equal(client.sent.length, 1);
+    assert.equal(clients.length, 1);
+    assert.doesNotMatch(bridge.state.error ?? '', /secret|payload/);
+    assert.equal(bridge.state.session?.settings.modelId, 'custom:selected');
+  });
+});
+
+test('restoring historical user images displays the saved bytes without submission or replay', async t => {
+  const { bridge, client } = await fixture(t, true, client => {
+    client.snapshots.original!.session.messages = [{
+      id: 'saved-image', role: 'user', content: [{ type: 'image', source: { type: 'base64', data: gif.data, mediaType: gif.mimeType } }],
+    }];
+  });
+  assert.deepEqual(bridge.state.messages, [{
+    id: 'saved-image', role: 'user', blocks: [{ id: 'saved-image:0', kind: 'image', data: gif.data, mime: gif.mimeType }],
+  }]);
+  assert.equal(client.sent.length, 0);
+});
+
+test('unknown image capability stays selected and Droid rejection propagates without stripping images or retrying', async t => {
+  const { bridge, client } = await fixture(t);
+  client.responseGate = Promise.resolve({ error: { code: -32000 } });
+  const before = structuredClone(bridge.state.session);
+  let acknowledgements = 0;
+  await assert.rejects(bridge.send('Inspect this', () => { acknowledgements++; }, [png]), /Droid rejected the request/);
+  assert.equal(acknowledgements, 0);
+  assert.deepEqual(bridge.state.session, before);
+  assert.equal(client.sent.length, 1);
+  assert.deepEqual(client.sent[0]?.images, [{ type: 'base64', data: png.data, mediaType: png.mimeType }]);
+  assert.equal(client.settingUpdates.length, 0);
 });
 
 test('permission outcomes are exact, persistent effects are marked, and duplicate requests settle once', async t => {
@@ -322,6 +464,23 @@ test('model normalization keeps supported efforts and custom selections without 
   ], { modelId: 'custom:owner', reasoningEffort: 'high', autonomyLevel: 'low', interactionMode: 'auto' });
   assert.deepEqual(models.map(model => model.id), ['same', 'custom:owner']);
   assert.deepEqual(models[0], { id: 'same', label: 'Latest', reasoningEfforts: ['high', 'max'], defaultReasoningEffort: 'high' });
+});
+
+test('model normalization retains explicit image capability through sparse metadata and respects later authoritative changes', () => {
+  const selected = { modelId: 'custom:owner', reasoningEffort: 'high', autonomyLevel: 'low', interactionMode: 'auto' };
+  const known = normalizeModels([
+    { id: 'custom:owner', noImageSupport: true },
+    { id: 'vision', noImageSupport: false },
+    { id: 'unknown', noImageSupport: 'false' },
+  ], selected);
+  assert.deepEqual(known.map(model => [model.id, model.noImageSupport]), [
+    ['custom:owner', true], ['vision', false], ['unknown', undefined],
+  ]);
+  const sparse = normalizeModels([{ id: 'vision' }], selected, known);
+  assert.equal(sparse.find(model => model.id === 'custom:owner')?.noImageSupport, true);
+  assert.equal(sparse.find(model => model.id === 'vision')?.noImageSupport, false);
+  const updated = normalizeModels([{ id: 'custom:owner', noImageSupport: false }], selected, sparse);
+  assert.equal(updated[0]?.noImageSupport, false);
 });
 
 test('file rewind submits only the exact inspected snapshot plan after explicit confirmation', async t => {

@@ -1,13 +1,13 @@
 // src/main.ts
 import { readFile as readFile2, mkdir as mkdir2, writeFile as writeFile2, rename as rename2 } from "node:fs/promises";
-import { homedir } from "node:os";
-import { join as join2, resolve } from "node:path";
+import { homedir as homedir2 } from "node:os";
+import { join as join2, resolve as resolve2 } from "node:path";
 import { parseArgs } from "node:util";
 import { Composer } from "@oh-my-pi/pi-tui/prompt/composer";
 import { CombinedAutocompleteProvider } from "@oh-my-pi/pi-tui/autocomplete";
-import { Text as Text5 } from "@oh-my-pi/pi-tui/components/text";
+import { Text as Text6 } from "@oh-my-pi/pi-tui/components/text";
 import { ErrorBannerComponent } from "@oh-my-pi/pi-tui/overlays/error-banner";
-import { node as node3, span as span2 } from "@oh-my-pi/pi-tui/native/describe";
+import { node as node4, span as span2 } from "@oh-my-pi/pi-tui/native/describe";
 import { actionButton as actionButton2 } from "@oh-my-pi/pi-tui/native/overlay";
 import { onNativeRenderingChange } from "@oh-my-pi/pi-tui/native/state";
 import { stopSharedSpinnerTicker } from "@oh-my-pi/pi-tui/chat/tool-execution";
@@ -327,19 +327,21 @@ function result(response) {
   if (!envelope.result || typeof envelope.result !== "object") throw new BridgeFailure("Droid returned no confirmed result. Check that the CLI supports the installed SDK.");
   return record(envelope.result);
 }
-function normalizeModels(value, selected) {
+function normalizeModels(value, selected, previous = []) {
   const models = /* @__PURE__ */ new Map();
   if (Array.isArray(value)) for (const item of value) {
     const model = record(item);
     if (typeof model.id !== "string" || model.disabled === true) continue;
+    const noImageSupport = typeof model.noImageSupport === "boolean" ? model.noImageSupport : (models.get(model.id) ?? previous.find((item2) => item2.id === model.id))?.noImageSupport;
     models.set(model.id, {
       id: model.id,
       label: typeof model.displayName === "string" ? model.displayName : model.id,
       reasoningEfforts: Array.isArray(model.supportedReasoningEfforts) ? model.supportedReasoningEfforts.filter((effort) => typeof effort === "string") : [],
-      ...typeof model.defaultReasoningEffort === "string" ? { defaultReasoningEffort: model.defaultReasoningEffort } : {}
+      ...typeof model.defaultReasoningEffort === "string" ? { defaultReasoningEffort: model.defaultReasoningEffort } : {},
+      ...noImageSupport !== void 0 ? { noImageSupport } : {}
     });
   }
-  if (selected?.modelId && !models.has(selected.modelId)) models.set(selected.modelId, { id: selected.modelId, label: selected.modelId, reasoningEfforts: selected.reasoningEffort ? [selected.reasoningEffort] : [] });
+  if (selected?.modelId && !models.has(selected.modelId)) models.set(selected.modelId, previous.find((model) => model.id === selected.modelId) ?? { id: selected.modelId, label: selected.modelId, reasoningEfforts: selected.reasoningEffort ? [selected.reasoningEffort] : [] });
   return [...models.values()];
 }
 function settings(value, previous) {
@@ -351,6 +353,19 @@ function settings(value, previous) {
     interactionMode: typeof source.interactionMode === "string" ? source.interactionMode : previous?.interactionMode ?? "",
     ...Array.isArray(source.availableAutonomyLevels) ? { availableAutonomyLevels: source.availableAutonomyLevels.filter((level) => typeof level === "string" && Object.values(AutonomyLevel).includes(level)) } : previous?.availableAutonomyLevels !== void 0 ? { availableAutonomyLevels: previous.availableAutonomyLevels } : {}
   };
+}
+function imageSources(images) {
+  if (images === void 0) return void 0;
+  const invalid = "Image attachments must contain valid base64 data in JPEG, PNG, GIF or WebP format.";
+  if (!Array.isArray(images)) throw new BridgeFailure(invalid);
+  const sources = [];
+  for (const image of images) {
+    const { data, mimeType } = record(image);
+    if (typeof data !== "string" || !data.length || data.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(data) || mimeType !== "image/jpeg" && mimeType !== "image/png" && mimeType !== "image/gif" && mimeType !== "image/webp") throw new BridgeFailure(invalid);
+    sources.push(Object.freeze({ type: "base64", data, mediaType: mimeType }));
+  }
+  Object.freeze(sources);
+  return sources;
 }
 var PENDING_SNAPSHOT_NOTICE = "Droid reported a pending prompt without reissuing its live request. This session is read-only until a live request arrives or Stop confirms idle. Otherwise answer it in its original owner and reopen the session.";
 var DroidBridge = class {
@@ -424,11 +439,15 @@ var DroidBridge = class {
       throw failure(error, "Read context usage");
     }
   }
-  async send(text2, onAccepted) {
+  async send(text2, onAccepted, images) {
     const scope = this.ready();
-    if (!text2.trim()) throw new BridgeFailure("Enter a message before sending.");
+    const sources = imageSources(images);
+    if (!text2.trim() && !sources?.length) throw new BridgeFailure("Enter a message or attach an image before sending.");
     if (this.active || this.operation || this.state.phase !== "idle") throw new BridgeFailure("Droid already has active work. Stop it or wait before sending another message.");
     if (scope.unansweredSnapshots.size) throw new BridgeFailure(PENDING_SNAPSHOT_NOTICE);
+    if (sources?.length && this.state.models.find((model) => model.id === this.state.session?.settings.modelId)?.noImageSupport === true) {
+      throw new BridgeFailure("The selected Droid model does not support image attachments. Choose an image-capable model or remove the images.");
+    }
     const { promise: done, resolve: resolveDone, reject: rejectDone } = Promise.withResolvers();
     void done.catch(() => void 0);
     const turn = {
@@ -454,7 +473,7 @@ var DroidBridge = class {
     this.changed();
     try {
       await Promise.race([
-        scope.client.addUserMessage({ text: text2, messageId: turn.messageId }, turn.requestId).then(result),
+        scope.client.addUserMessage({ text: text2, messageId: turn.messageId, ...sources?.length ? { images: sources } : {} }, turn.requestId).then(result),
         done
       ]);
       await done;
@@ -676,7 +695,7 @@ var DroidBridge = class {
       this.install(scope, response, !sessionId);
       try {
         const discovered = result(await scope.client.listModels());
-        if (this.scope === scope) this.state.models = normalizeModels(discovered.models, this.state.session?.settings);
+        if (this.scope === scope) this.state.models = normalizeModels(discovered.models, this.state.session?.settings, this.state.models);
       } catch (error) {
         if (this.scope === scope) this.state.notice = failure(error, "Discover models").message;
       }
@@ -719,7 +738,7 @@ var DroidBridge = class {
       cwd: typeof response.cwd === "string" ? response.cwd : typeof session.cwd === "string" ? session.cwd : created ? this.options.cwd : "",
       settings: settings(response.settings)
     };
-    this.state.models = normalizeModels(response.availableModels, this.state.session.settings);
+    this.state.models = normalizeModels(response.availableModels, this.state.session.settings, this.state.models);
     this.state.context = null;
     this.state.usage = null;
     this.usage(response.tokenUsage);
@@ -762,7 +781,7 @@ var DroidBridge = class {
     if (event.type === "create_message") {
       const message = record(event.message);
       const turn = this.active;
-      if (turn?.scope === scope && !turn.accepted && typeof message.id === "string" && message.role === "user" && message.visibility !== "llm_only" && message.isUserVisible !== false && message.hiddenFromUserViews !== true && Array.isArray(message.content) && message.content.some((value2) => record(value2).type === "text") && (message.id === turn.messageId || event.requestId === turn.requestId)) {
+      if (turn?.scope === scope && !turn.accepted && typeof message.id === "string" && message.role === "user" && message.visibility !== "llm_only" && message.isUserVisible !== false && message.hiddenFromUserViews !== true && Array.isArray(message.content) && message.content.some((value2) => record(value2).type === "text" || record(value2).type === "image") && (message.id === turn.messageId || event.requestId === turn.requestId)) {
         turn.accepted = true;
         try {
           turn.accept();
@@ -772,7 +791,7 @@ var DroidBridge = class {
       }
     } else if (event.type === "settings_updated" && this.state.session) {
       this.state.session.settings = settings(event.settings, this.state.session.settings);
-      this.state.models = normalizeModels(this.state.models.map((model) => ({ id: model.id, displayName: model.label, supportedReasoningEfforts: model.reasoningEfforts, defaultReasoningEffort: model.defaultReasoningEffort })), this.state.session.settings);
+      this.state.models = normalizeModels(this.state.models.map((model) => ({ id: model.id, displayName: model.label, supportedReasoningEfforts: model.reasoningEfforts, defaultReasoningEffort: model.defaultReasoningEffort, noImageSupport: model.noImageSupport })), this.state.session.settings);
     } else if (event.type === "session_title_updated" && this.state.session && typeof event.title === "string") this.state.session.title = event.title;
     else if (event.type === "session_working_directory_changed" && this.state.session && typeof event.cwd === "string") this.state.session.cwd = event.cwd;
     else if (event.type === "session_token_usage_changed") this.usage(event.tokenUsage);
@@ -878,10 +897,10 @@ var DroidBridge = class {
     if (settled) return Promise.resolve(settled);
     const pending = scope.prompts.find((prompt) => prompt.kind === "approval" && prompt.id === id);
     if (pending?.kind === "approval") return pending.promise;
-    const { promise, resolve: resolve2 } = Promise.withResolvers();
+    const { promise, resolve: resolve3 } = Promise.withResolvers();
     scope.prompts.push({ kind: "approval", id, promise, settle(value2) {
       scope.permissionResults.set(id, value2);
-      resolve2(value2);
+      resolve3(value2);
     }, view: {
       id,
       title: names.join(", ") || "Droid permission",
@@ -919,10 +938,10 @@ var DroidBridge = class {
     if (settled) return Promise.resolve(settled);
     const pending = scope.prompts.find((prompt) => prompt.kind === "question" && prompt.id === id);
     if (pending?.kind === "question") return pending.promise;
-    const { promise, resolve: resolve2 } = Promise.withResolvers();
+    const { promise, resolve: resolve3 } = Promise.withResolvers();
     scope.prompts.push({ kind: "question", id, promise, settle(value2) {
       scope.questionResults.set(id, value2);
-      resolve2(value2);
+      resolve3(value2);
     }, view: { id, questions } });
     this.showPrompt(scope);
     this.changed();
@@ -1156,9 +1175,9 @@ var DroidToolCard = class extends ToolExecutionComponent {
         ...numberedCode(part.lines, { lang: part.lang })
       ], { gap: "xs", role: "omp.tool.search.file" }), `source-${index}`)];
     });
-    const node4 = { ...original, c: [...body, ...original.c.slice(1)] };
-    this.projection = { original, node: node4 };
-    return node4;
+    const node5 = { ...original, c: [...body, ...original.c.slice(1)] };
+    this.projection = { original, node: node5 };
+    return node5;
   }
   setExpanded(expanded) {
     this.expanded = expanded;
@@ -1607,6 +1626,14 @@ var en = {
   stop: "Stop",
   draft: "Message Droid",
   draftHint: "Enter to send \xB7 Shift+Enter for a new line",
+  attachImage: "Attach image",
+  attachImageHint: "Paste an image or use /attach PATH (JPEG, PNG, GIF, WebP).",
+  imagePathInvalid: "Cannot read this local image. Check the file path and permissions.",
+  imageInvalid: "Choose a valid JPEG, PNG, GIF or WebP image.",
+  imageTooLarge: "This image exceeds the 20 MiB attachment limit.",
+  imageClipboardFailed: "Cannot read the clipboard. Paste a local image path or use /attach PATH.",
+  imageUnsupportedModel: "This Droid model does not support images. Choose an image-capable model or remove the images.",
+  imageEmptyDraft: "Enter a message or attach an image before sending.",
   empty: "Start a conversation in this project.",
   context: "Context",
   usage: "Tokens",
@@ -1700,6 +1727,14 @@ var zh = {
   stop: "\u505C\u6B62",
   draft: "\u7ED9 Droid \u53D1\u6D88\u606F",
   draftHint: "Enter \u53D1\u9001 \xB7 Shift+Enter \u6362\u884C",
+  attachImage: "\u6DFB\u52A0\u56FE\u7247",
+  attachImageHint: "\u7C98\u8D34\u56FE\u7247\uFF0C\u6216\u4F7F\u7528 /attach \u8DEF\u5F84\uFF08JPEG\u3001PNG\u3001GIF\u3001WebP\uFF09\u3002",
+  imagePathInvalid: "\u65E0\u6CD5\u8BFB\u53D6\u672C\u5730\u56FE\u7247\uFF0C\u8BF7\u68C0\u67E5\u6587\u4EF6\u8DEF\u5F84\u548C\u8BFB\u53D6\u6743\u9650\u3002",
+  imageInvalid: "\u8BF7\u9009\u62E9\u6709\u6548\u7684 JPEG\u3001PNG\u3001GIF \u6216 WebP \u56FE\u7247\u3002",
+  imageTooLarge: "\u56FE\u7247\u8D85\u8FC7 20 MiB \u9644\u4EF6\u4E0A\u9650\u3002",
+  imageClipboardFailed: "\u65E0\u6CD5\u8BFB\u53D6\u526A\u8D34\u677F\u3002\u8BF7\u7C98\u8D34\u672C\u5730\u56FE\u7247\u8DEF\u5F84\uFF0C\u6216\u4F7F\u7528 /attach \u8DEF\u5F84\u3002",
+  imageUnsupportedModel: "\u5F53\u524D Droid \u6A21\u578B\u4E0D\u652F\u6301\u56FE\u7247\uFF0C\u8BF7\u9009\u62E9\u652F\u6301\u56FE\u7247\u7684\u6A21\u578B\uFF0C\u6216\u79FB\u9664\u56FE\u7247\u540E\u53D1\u9001\u3002",
+  imageEmptyDraft: "\u8BF7\u8F93\u5165\u6D88\u606F\u6216\u6DFB\u52A0\u56FE\u7247\u540E\u518D\u53D1\u9001\u3002",
   empty: "\u5728\u5F53\u524D\u9879\u76EE\u5F00\u59CB\u5BF9\u8BDD\u3002",
   context: "\u4E0A\u4E0B\u6587",
   usage: "Token",
@@ -2207,7 +2242,7 @@ ${detail}` }
   showModal(create, owner2, sessionId) {
     if (this.disposed || (owner2 ? !this.current(owner2) : !!this.livePrompt())) return Promise.resolve(void 0);
     this.modal?.cancel();
-    const { promise, resolve: resolve2 } = Promise.withResolvers();
+    const { promise, resolve: resolve3 } = Promise.withResolvers();
     let modal;
     let closed = false;
     const finish = (value) => {
@@ -2218,7 +2253,7 @@ ${detail}` }
       modal.handle.hide();
       modal.component.dispose?.();
       this.focus();
-      resolve2(valid ? value : void 0);
+      resolve3(valid ? value : void 0);
       if (!this.disposed) this.options.onChange();
     };
     const component = create({
@@ -2506,10 +2541,447 @@ var DroidTodoHud = class extends Text4 {
     }, void 0, stableKey(sessionId)) : EMPTY_NODE;
     this.setText(tasks?.map((task) => `${task.status === "completed" ? "[x]" : task.status === "in_progress" ? "[>]" : "[ ]"} ${task.content}`).join("\n") ?? "");
   }
+  hasTasks() {
+    return this.native !== EMPTY_NODE;
+  }
   describe() {
     return this.native;
   }
 };
+
+// src/omp-working.ts
+import { Text as Text5 } from "@oh-my-pi/pi-tui/components/text";
+import { describeWorkingRow } from "@oh-my-pi/pi-tui/components/loader";
+import { col as col3, node as node3, EMPTY_NODE as EMPTY_NODE2 } from "@oh-my-pi/pi-tui/native/describe";
+
+// src/work-state.ts
+var IDLE = Object.freeze({ active: false });
+function isDroidWorking(state) {
+  return state.session !== null && (state.phase === "running" || state.phase === "stopping");
+}
+var DroidWorkTracker = class {
+  sessionId;
+  startedAt;
+  lastTool;
+  lastArgs;
+  lastName;
+  step;
+  snapshot = IDLE;
+  sync(state, now = Date.now()) {
+    const sessionId = state.session?.id ?? null;
+    if (sessionId !== this.sessionId || !["running", "stopping", "approval", "question"].includes(state.phase)) {
+      this.sessionId = sessionId;
+      this.startedAt = void 0;
+      this.lastTool = void 0;
+      this.lastArgs = void 0;
+      this.lastName = void 0;
+      this.step = void 0;
+    }
+    if (!isDroidWorking(state)) return this.snapshot = IDLE;
+    this.startedAt ??= now;
+    let tool;
+    let thinking = false;
+    for (let m = state.messages.length - 1; m >= 0; m--) {
+      const message = state.messages[m];
+      if (message.role === "user") break;
+      if (message.role !== "assistant") continue;
+      if (message.streaming === true && message.blocks.at(-1)?.kind === "thinking") thinking = true;
+      for (let b = message.blocks.length - 1; b >= 0; b--) {
+        const block = message.blocks[b];
+        if (block.kind === "tool" && block.status === "running" && !block.resultReceived) {
+          tool = block;
+          break;
+        }
+      }
+      if (tool) break;
+    }
+    if (tool && (tool !== this.lastTool || tool.args !== this.lastArgs || tool.name !== this.lastName)) {
+      this.lastTool = tool;
+      this.lastArgs = tool.args;
+      this.lastName = tool.name;
+      let summary;
+      try {
+        summary = record(JSON.parse(tool.args)).summary;
+      } catch {
+      }
+      this.step = typeof summary === "string" && summary.trim() ? summary : tool.name;
+    }
+    const stage = state.phase === "stopping" ? "stopping" : this.step ? "tool" : thinking ? "thinking" : "response";
+    const previous = this.snapshot;
+    if (previous.active && previous.startedAt === this.startedAt && previous.stage === stage && previous.step === this.step) return previous;
+    return this.snapshot = { active: true, startedAt: this.startedAt, stage, ...this.step ? { step: this.step } : {} };
+  }
+};
+
+// src/omp-working.ts
+var DroidWorkingHud = class extends Text5 {
+  constructor(todos) {
+    super("", 0, 0);
+    this.todos = todos;
+  }
+  tracker = new DroidWorkTracker();
+  snapshot = { active: false };
+  locale;
+  label = "";
+  native;
+  sync(state, locale) {
+    const snapshot = this.tracker.sync(state);
+    if (snapshot === this.snapshot && locale === this.locale) return;
+    this.snapshot = snapshot;
+    this.locale = locale;
+    this.native = void 0;
+    const t = dictionary(locale);
+    this.label = !snapshot.active ? "" : snapshot.stage === "stopping" ? t.stop : snapshot.step ?? (snapshot.stage === "thinking" ? t.thinking : t.assistant);
+    this.setText(this.label);
+  }
+  describe(cx) {
+    if (!this.snapshot.active) return this.todos.hasTasks() ? node3("row", { role: "omp.hud", justify: "end", gap: "sm" }, [this.todos]) : EMPTY_NODE2;
+    if (!this.native) {
+      const original = describeWorkingRow({ label: this.label, startedAt: this.snapshot.startedAt }, cx);
+      const working = original.k === "row" ? { ...original, p: { ...original.p, grow: 1, basis: "content", min: { w: 0 } } } : original;
+      this.native = col3([
+        node3("row", { align: "center", gap: "sm", wrap: true }, [
+          working,
+          this.todos
+        ])
+      ], { role: "omp.hud.status" });
+    }
+    return this.native;
+  }
+};
+
+// src/omp-images.ts
+import { AsyncLocalStorage } from "node:async_hooks";
+import { constants } from "node:fs";
+import { open } from "node:fs/promises";
+import { homedir } from "node:os";
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { readImageFromClipboard, readTextFromClipboard } from "@oh-my-pi/pi-natives/clipboard";
+import { parseImageMetadata } from "@oh-my-pi/pi-utils/mime";
+import { imageDecodeFailureReason, MAX_IMAGE_INPUT_BYTES } from "@oh-my-pi/pi-tui/chat/image-loading";
+import { chipLabel, compactImageMarkers, formatVisionMarker, PLACEHOLDER_REGEX } from "@oh-my-pi/pi-tui/prompt/composer-attachments";
+import { extractImagePastePathsFromText, extractImagePathFromText } from "@oh-my-pi/pi-tui/prompt/custom-editor";
+import { cachedImageDimensions, setCachedImageDimensions } from "@oh-my-pi/pi-tui/prompt/image-references";
+import { tagImageAttachmentSource } from "@oh-my-pi/pi-tui/prompt/image-source";
+var AttachmentError = class extends Error {
+  constructor(key) {
+    super(key);
+    this.key = key;
+  }
+};
+var DroidImageComposer = class {
+  constructor(editor, options) {
+    this.editor = editor;
+    this.options = options;
+    this.#rawDraft = editor.getText();
+    this.#originalChange = editor.onChange;
+    this.#originalSubmit = editor.onSubmit;
+    this.#originalPasteImage = editor.onPasteImage;
+    this.#originalPastePath = editor.onPasteImagePath;
+    this.#originalClearPasteState = editor.clearPasteState;
+    this.#originalHandleInput = editor.handleInput;
+    this.#originalHandleDraftEdit = editor.handleDraftEdit;
+    editor.handleInput = this.#handleInput;
+    editor.handleDraftEdit = this.#handleDraftEdit;
+    editor.clearPasteState = this.#clearPasteState;
+    editor.onChange = this.#change;
+    editor.onSubmit = this.#submit;
+    editor.onPasteImage = this.#pasteImage;
+    editor.onPasteImagePath = this.#pastePath;
+  }
+  #submissions = /* @__PURE__ */ new WeakMap();
+  #inputLifetime = new AsyncLocalStorage();
+  #originalHandleInput;
+  #originalHandleDraftEdit;
+  #originalChange;
+  #originalSubmit;
+  #originalPasteImage;
+  #originalPastePath;
+  #originalClearPasteState;
+  #rawDraft;
+  #restoringDraft;
+  #generation = 0;
+  #disposed = false;
+  #transition;
+  #pendingAttachments = 0;
+  #lifetime() {
+    return { generation: this.#generation, session: this.options.currentSession(), cwd: this.options.cwd(), transition: this.#transition };
+  }
+  #alive(lifetime) {
+    const transition = lifetime.transition;
+    return !this.#disposed && lifetime.generation === this.#generation && (transition?.active || (transition ? transition.session : lifetime.session) === this.options.currentSession() && (transition ? transition.cwd : lifetime.cwd) === this.options.cwd());
+  }
+  #report(error, fallback) {
+    this.options.onError(new Error(dictionary(this.options.locale())[error instanceof AttachmentError ? error.key : fallback]));
+  }
+  // Editor.#submitValue empties its buffer, calls this public hook, then emits
+  // onChange/onSubmit. Defer only that clearing so the original private paste
+  // table and atom expansions survive; rebuilding from expanded text loses chips.
+  #clearPasteState = () => {
+    if (!this.#disposed && this.#rawDraft !== "" && this.editor.getText() === "") {
+      this.#restoringDraft = this.#rawDraft;
+      return;
+    }
+    this.#originalClearPasteState.call(this.editor);
+  };
+  #change = (text2) => {
+    if (this.#restoringDraft !== void 0 && text2 === "") return;
+    this.#rawDraft = text2;
+    this.#originalChange?.(text2);
+    this.options.onChange();
+  };
+  #submit = (text2) => {
+    const submission = this.captureSubmission(text2);
+    this.options.onSubmit(submission);
+  };
+  // The native multi-path router awaits each load before calling the next hook.
+  // Its complete async chain must retain the originating session, not re-sample
+  // the newly opened session halfway through a dropped group of files.
+  #handleInput = (data) => {
+    this.#inputLifetime.run(this.#lifetime(), () => this.#originalHandleInput.call(this.editor, data));
+  };
+  #handleDraftEdit = (data) => {
+    this.#inputLifetime.run(this.#lifetime(), () => this.#originalHandleDraftEdit.call(this.editor, data));
+  };
+  #pastePath = (path) => this.#loadPath(path, this.#inputLifetime.getStore() ?? this.#lifetime());
+  #pasteImage = () => this.pasteClipboard();
+  /** Called synchronously from omp's onSubmit; restores the untouched chip draft. */
+  captureSubmission(message) {
+    const rawDraft = this.#restoringDraft;
+    this.#restoringDraft = void 0;
+    if (rawDraft !== void 0) this.editor.setText(rawDraft);
+    const compacted = compactImageMarkers(message, this.editor.pendingImages.length, { byAppearance: true });
+    const retained = compacted ? compacted.keep.map((index) => this.editor.pendingImages[index]) : this.editor.pendingImages;
+    const expanded = compacted?.text ?? message;
+    const text2 = expanded.replace(PLACEHOLDER_REGEX, (marker, kind, index) => kind === "Image" && Number(index) <= retained.length ? "" : marker).trim();
+    const images = Object.freeze(retained.map((image) => {
+      if (!image || !isInputMime(image.mimeType)) throw new AttachmentError("imageInvalid");
+      return Object.freeze({ data: image.data, mimeType: image.mimeType });
+    }));
+    const submission = Object.freeze({ text: text2, images });
+    this.#submissions.set(submission, {
+      ...this.#lifetime(),
+      revision: this.editor.textRevision,
+      atomsRevision: this.editor.atomsRevision,
+      images: [...this.editor.pendingImages],
+      historyText: message
+    });
+    return submission;
+  }
+  /** Only actual backend acceptance may commit history and clear this exact draft. */
+  accept(submission) {
+    const state = this.#submissions.get(submission);
+    this.#submissions.delete(submission);
+    if (!state || !this.#alive(state)) return false;
+    if (state.revision !== this.editor.textRevision || state.atomsRevision !== this.editor.atomsRevision || state.images.length !== this.editor.pendingImages.length || state.images.some((image, index) => image !== this.editor.pendingImages[index])) {
+      this.editor.addToHistory(state.historyText);
+      return false;
+    }
+    this.editor.clearDraft(state.historyText);
+    this.options.onChange();
+    return true;
+  }
+  hasAttachments() {
+    return this.editor.composerChips().some((chip) => chip.kind === "image");
+  }
+  /** Detach the old draft while a session opens, without destroying native paste tables. */
+  beginSessionChange() {
+    let previous = {
+      text: this.editor.getText(),
+      images: this.editor.pendingImages,
+      links: this.editor.pendingImageLinks,
+      imageLinks: this.editor.imageLinks,
+      texts: this.editor.pendingTexts
+    };
+    const generation = ++this.#generation;
+    this.#pendingAttachments = 0;
+    this.#restoringDraft = void 0;
+    const transition = {
+      active: true,
+      session: this.options.currentSession(),
+      cwd: this.options.cwd()
+    };
+    this.#transition = transition;
+    this.editor.pendingImages = [];
+    this.editor.pendingImageLinks = [];
+    this.editor.imageLinks = void 0;
+    this.editor.pendingTexts = [];
+    this.editor.setText("");
+    const revision = this.editor.textRevision;
+    const atomsRevision = this.editor.atomsRevision;
+    let settled = false;
+    const finish = (restore) => {
+      if (settled) return;
+      settled = true;
+      transition.active = false;
+      transition.session = this.options.currentSession();
+      transition.cwd = this.options.cwd();
+      if (this.#transition === transition) this.#transition = void 0;
+      if (!this.#disposed && generation === this.#generation) {
+        const unchanged = revision === this.editor.textRevision && atomsRevision === this.editor.atomsRevision && this.#pendingAttachments === 0;
+        if (restore && unchanged && previous) {
+          this.editor.pendingImages = previous.images;
+          this.editor.pendingImageLinks = previous.links;
+          this.editor.imageLinks = previous.imageLinks;
+          this.editor.pendingTexts = previous.texts;
+          this.editor.setText(previous.text);
+        } else if (unchanged) {
+          this.#originalClearPasteState.call(this.editor);
+        }
+        this.options.onChange();
+      }
+      previous = void 0;
+    };
+    return { complete: () => finish(false), rollback: () => finish(true) };
+  }
+  /** Call only after a session change succeeds; also fences work from the old session. */
+  resetSession() {
+    this.#generation++;
+    this.#transition = void 0;
+    this.#pendingAttachments = 0;
+    this.#restoringDraft = void 0;
+    this.editor.clearDraft();
+    this.options.onChange();
+  }
+  addPath(path) {
+    return this.#loadPath(path, this.#lifetime());
+  }
+  async #loadPath(path, lifetime) {
+    if (!this.#alive(lifetime)) return;
+    this.#pendingAttachments++;
+    try {
+      const extracted = extractImagePathFromText(path) ?? path.trim();
+      const normalized = extracted.length > 1 && (extracted[0] === '"' || extracted[0] === "'") && extracted.at(-1) === extracted[0] ? extracted.slice(1, -1) : extracted;
+      const localPath = normalized.startsWith("file:") ? fileURLToPath(normalized) : normalized;
+      if (!localPath || localPath.includes("\0") || /^[a-z][a-z\d+.-]*:/i.test(localPath)) throw new AttachmentError("imagePathInvalid");
+      const fullPath = resolve(lifetime.cwd, localPath.startsWith("~/") ? resolve(homedir(), localPath.slice(2)) : localPath);
+      const file = await open(fullPath, constants.O_RDONLY | constants.O_NONBLOCK);
+      let bytes;
+      try {
+        const stat = await file.stat();
+        if (!stat.isFile()) throw new AttachmentError("imagePathInvalid");
+        if (stat.size > MAX_IMAGE_INPUT_BYTES) throw new AttachmentError("imageTooLarge");
+        bytes = await file.readFile();
+      } finally {
+        await file.close();
+      }
+      if (bytes.length > MAX_IMAGE_INPUT_BYTES) throw new AttachmentError("imageTooLarge");
+      if (!this.#alive(lifetime)) return;
+      const image = await decodedImage(bytes, fullPath);
+      if (!this.#alive(lifetime)) return;
+      this.#attach(image, fullPath);
+    } catch (error) {
+      if (this.#alive(lifetime)) this.#report(error, "imagePathInvalid");
+    } finally {
+      if (lifetime.generation === this.#generation) this.#pendingAttachments--;
+    }
+  }
+  /** Invoked only by an explicit native paste action, never at startup. */
+  async pasteClipboard() {
+    const lifetime = this.#inputLifetime.getStore() ?? this.#lifetime();
+    if (!this.#alive(lifetime)) return false;
+    this.#pendingAttachments++;
+    try {
+      let text2;
+      let textFailed = false;
+      try {
+        text2 = await readTextFromClipboard();
+      } catch {
+        textFailed = true;
+      }
+      if (!this.#alive(lifetime)) return false;
+      const paths = text2 ? extractImagePastePathsFromText(text2) : void 0;
+      if (paths?.length) {
+        for (const path of paths) {
+          if (!this.#alive(lifetime)) return false;
+          await this.#loadPath(path, lifetime);
+        }
+        return true;
+      }
+      let imageFailed = false;
+      let clipboard;
+      try {
+        clipboard = await readImageFromClipboard();
+      } catch {
+        imageFailed = true;
+      }
+      if (!this.#alive(lifetime)) return false;
+      if (clipboard) {
+        const image = await decodedImage(clipboard.data);
+        if (!this.#alive(lifetime)) return false;
+        this.#attach(image);
+        return true;
+      }
+      if (text2) {
+        this.editor.pasteText(text2);
+        this.options.onChange();
+        return true;
+      }
+      if (textFailed || imageFailed) throw new AttachmentError("imageClipboardFailed");
+      return false;
+    } catch (error) {
+      if (this.#alive(lifetime)) this.#report(error, "imageClipboardFailed");
+      return false;
+    } finally {
+      if (lifetime.generation === this.#generation) this.#pendingAttachments--;
+    }
+  }
+  #attach(image, path) {
+    const dims = cachedImageDimensions(image) ?? void 0;
+    this.editor.pendingImages.push(image);
+    this.editor.pendingImageLinks.push(path);
+    this.editor.imageLinks = this.editor.pendingImageLinks;
+    const n = this.editor.pendingImages.length;
+    this.editor.insertAtom(chipLabel("image", n), formatVisionMarker("image", n, dims));
+    this.options.onChange();
+  }
+  dispose() {
+    if (this.#disposed) return;
+    this.#disposed = true;
+    this.#generation++;
+    if (this.editor.clearPasteState === this.#clearPasteState) this.editor.clearPasteState = this.#originalClearPasteState;
+    if (this.editor.onChange === this.#change) this.editor.onChange = this.#originalChange;
+    if (this.editor.onSubmit === this.#submit) this.editor.onSubmit = this.#originalSubmit;
+    if (this.editor.onPasteImage === this.#pasteImage) this.editor.onPasteImage = this.#originalPasteImage;
+    if (this.editor.onPasteImagePath === this.#pastePath) this.editor.onPasteImagePath = this.#originalPastePath;
+    if (this.editor.handleInput === this.#handleInput) this.editor.handleInput = this.#originalHandleInput;
+    if (this.editor.handleDraftEdit === this.#handleDraftEdit) this.editor.handleDraftEdit = this.#originalHandleDraftEdit;
+    this.#inputLifetime.disable();
+    this.editor.clearDraft();
+  }
+};
+function isInputMime(mimeType) {
+  return mimeType === "image/jpeg" || mimeType === "image/png" || mimeType === "image/gif" || mimeType === "image/webp";
+}
+async function decodedImage(bytes, path) {
+  if (bytes.byteLength > MAX_IMAGE_INPUT_BYTES) throw new AttachmentError("imageTooLarge");
+  const metadata = parseImageMetadata(bytes);
+  if (!metadata || !isInputMime(metadata.mimeType)) throw new AttachmentError("imageInvalid");
+  const image = {
+    type: "image",
+    data: Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("base64"),
+    mimeType: metadata.mimeType
+  };
+  if (await imageDecodeFailureReason(image) !== null) throw new AttachmentError("imageInvalid");
+  const attached = path ? tagImageAttachmentSource(image, path, "image") : image;
+  setCachedImageDimensions(attached, metadata.width && metadata.height ? { width: metadata.width, height: metadata.height } : null);
+  return attached;
+}
+function imageAdmissionError(error, locale) {
+  const message = error instanceof Error ? error.message : String(error);
+  const labels = dictionary(locale);
+  switch (message) {
+    case "The selected Droid model does not support image attachments. Choose an image-capable model or remove the images.":
+      return labels.imageUnsupportedModel;
+    case "Image attachments must contain valid base64 data in JPEG, PNG, GIF or WebP format.":
+      return labels.imageInvalid;
+    case "Enter a message or attach an image before sending.":
+      return labels.imageEmptyDraft;
+    default:
+      return void 0;
+  }
+}
 
 // src/main.ts
 var { values } = parseArgs({ options: {
@@ -2528,9 +3000,9 @@ if (values.help || values.version) {
 async function run() {
   if (values.locale && values.locale !== "zh-CN" && values.locale !== "en-US") throw new Error("--locale must be zh-CN or en-US");
   if (values.session && values["pick-session"]) throw new Error("Choose --session or --pick-session, not both.");
-  const cwd = resolve(values.cwd ?? process.cwd());
-  const config = process.env.TERN_CONFIG_DIR ?? (process.platform === "darwin" ? join2(homedir(), "Library", "Application Support", "Tern") : join2(process.env.XDG_STATE_HOME ?? join2(homedir(), ".local", "state"), "tern"));
-  const dataDir = resolve(values["data-dir"] ?? join2(config, "plugin-data", "tern-bridge-droid"));
+  const cwd = resolve2(values.cwd ?? process.cwd());
+  const config = process.env.TERN_CONFIG_DIR ?? (process.platform === "darwin" ? join2(homedir2(), "Library", "Application Support", "Tern") : join2(process.env.XDG_STATE_HOME ?? join2(homedir2(), ".local", "state"), "tern"));
+  const dataDir = resolve2(values["data-dir"] ?? join2(config, "plugin-data", "tern-bridge-droid"));
   let preferences = {};
   try {
     const saved = JSON.parse(await readFile2(join2(dataDir, "preferences.json"), "utf8"));
@@ -2552,6 +3024,7 @@ async function run() {
   let closing = false;
   let scheduled = false;
   let submitting = false;
+  let terminalProgress = false;
   let pendingNew = null;
   let uiError = null;
   let observedBackendError = null;
@@ -2562,10 +3035,9 @@ async function run() {
   let facts;
   let factsKey = "";
   let expanded = false;
-  let draftRevision = 0;
   let autocompleteCwd = "";
-  const notice = new Text5("");
-  const identity = new Text5("Droid");
+  const notice = new Text6("");
+  const identity = new Text6("Droid");
   const composer = new Composer({ preferences: { quiet: true, spellingAutocomplete: "off", spellingTypoDetection: false }, exit: (code2) => {
     process.exitCode = code2;
     void shutdown();
@@ -2573,12 +3045,10 @@ async function run() {
   const backend = new DroidBridge({ cwd, dataDir, execPath: values.droid ?? (typeof preferences.droidPath === "string" ? preferences.droidPath : void 0), onChange: changed });
   const transcript = new DroidTranscript(composer.ui, cwd);
   const todos = new DroidTodoHud();
-  const dialogs = new DroidDialogs(composer, backend, { locale: () => locale, onError: report, onChange: changed, openSession: (id) => open(id) });
+  const working = new DroidWorkingHud(todos);
+  const dialogs = new DroidDialogs(composer, backend, { locale: () => locale, onError: report, onChange: changed, openSession: (id) => open2(id) });
   composer.setHeaderExtras([identity], []);
   composer.editor.magicKeywordsEnabledOverride = false;
-  composer.editor.onChange = () => {
-    draftRevision++;
-  };
   composer.editor.composerState = () => ({ running: busy(), thinking: backend.state.session?.settings.reasoningEffort, title: backend.state.session?.title || void 0 });
   composer.editor.composerFacts = {
     describeComposerFacts: () => facts,
@@ -2586,16 +3056,22 @@ async function run() {
       if (event.type === "action" && event.act.startsWith("status.")) void perform(() => command(event.act.slice(7)));
     }
   };
-  composer.editor.onSubmit = (message) => {
-    composer.editor.setText(message);
-    void perform(() => submit(message));
-  };
+  const images = new DroidImageComposer(composer.editor, {
+    locale: () => locale,
+    currentSession: () => backend.state.session?.id ?? null,
+    cwd: () => backend.state.session?.cwd ?? cwd,
+    onChange: changed,
+    onError: report,
+    onSubmit: (submission) => {
+      void perform(() => submit(submission));
+    }
+  });
   composer.editor.onEscape = () => {
     void perform(() => busy() ? backend.interrupt() : Promise.resolve());
   };
   composer.editor.onClear = () => {
     if (busy()) void perform(() => backend.interrupt());
-    else composer.editor.setText("");
+    else composer.editor.clearDraft();
   };
   composer.editor.onExit = () => {
     void perform(() => command("quit"));
@@ -2632,6 +3108,7 @@ async function run() {
     { name: "compact", description: "Droid: compact context (may use model quota)" },
     { name: "rewind", description: "Droid: inspect rewind" },
     { name: "context", description: "Droid: context usage breakdown" },
+    { name: "attach", description: "Droid: attach a local image" },
     { name: "retry", description: "Droid: reconnect without replay" },
     { name: "language", description: "Bridge: \u4E2D\u6587 / English" },
     { name: "help", description: "Bridge: conversation actions" },
@@ -2645,7 +3122,7 @@ async function run() {
   }
   function report(error) {
     if (closing) return;
-    uiError = error instanceof Error ? error.message : String(error);
+    uiError = imageAdmissionError(error, locale) ?? (error instanceof Error ? error.message : String(error));
     pendingNew = null;
     changed();
   }
@@ -2676,12 +3153,17 @@ async function run() {
         if (backend.state.session?.id !== pendingNew || backend.state.phase === "error") pendingNew = null;
         else if (!busy() && backend.state.phase === "idle") {
           pendingNew = null;
-          void perform(() => open());
+          void perform(() => open2());
         }
       }
     });
   }
   function update() {
+    const active = isDroidWorking(backend.state);
+    if (terminalProgress !== active) {
+      terminalProgress = active;
+      composer.ui.terminal.setProgress(active);
+    }
     const b = backend.state;
     const t = dictionary(locale);
     const activeCwd = b.session?.cwd || cwd;
@@ -2707,9 +3189,10 @@ async function run() {
     notice.setText(b.notice ?? "");
     transcript.sync(b);
     todos.sync(b, locale);
+    working.sync(b, locale);
     const prompt = dialogs.syncPrompts();
     composer.editor.disableSubmit = submitting || ["connecting", "running", "approval", "question", "stopping"].includes(b.phase) || b.needsInterrupt;
-    composer.setRuntimeChildren([transcript.container, ...banner ? [banner] : [], ...b.notice ? [notice] : [], todos, prompt ?? composer.editor]);
+    composer.setRuntimeChildren([transcript.container, ...banner ? [banner] : [], ...b.notice ? [notice] : [], working, prompt ?? composer.editor]);
     if (prompt !== mountedPrompt) {
       mountedPrompt = prompt;
       if (!dialogs.hasOverlay()) composer.ui.setFocus(prompt ?? composer.editor);
@@ -2719,54 +3202,58 @@ async function run() {
     const key = JSON.stringify([locale, b.phase, b.context, b.usage, b.session?.title, selected?.label, settings2]);
     if (key !== factsKey) {
       factsKey = key;
-      const segments = [
+      const segments = ["error", "disconnected"].includes(b.phase) ? [{ key: "retry", label: t.reconnect, title: t.reconnectHint }] : [
         { key: "sessions", label: t.sessions, title: t.sessions },
         { key: "more", label: t.more, title: t.more },
         { key: "mode", label: settings2?.interactionMode || t.mode, title: `${t.mode}: ${settings2?.interactionMode || t.unknown}` },
         { key: "autonomy", label: settings2?.autonomyLevel || t.autonomy, title: `${t.autonomy}: ${settings2?.autonomyLevel || t.unknown}` },
-        ...["error", "disconnected"].includes(b.phase) ? [{ key: "retry", label: t.reconnect, title: t.reconnectHint }] : []
+        { key: "attach", label: t.attachImage, title: t.attachImageHint }
       ];
       facts = {
-        context: node3("meter", {
+        context: node4("meter", {
           role: "omp.composer.context",
           style: "bar",
           actions: { click: "status.context" },
           aria: t.context,
           value: b.context && b.context.limit > 0 ? Math.min(1, b.context.used / b.context.limit) : null,
-          ...b.context ? { label: `${Math.round(b.context.used / b.context.limit * 100)}%`, total: b.context.limit.toLocaleString(locale) } : {},
+          ...b.context && b.context.limit > 0 ? { label: `${Math.round(b.context.used / b.context.limit * 100)}%` } : {},
           title: `${t.context}: ${b.context ? `${b.context.used.toLocaleString(locale)} / ${b.context.limit.toLocaleString(locale)}` : t.unknown}`
         }, void 0, "context"),
         model: { spans: [span2(`Droid \xB7 ${selected?.label || settings2?.modelId || t.default}`)], title: t.model },
-        extras: node3(
+        extras: node4(
           "row",
           { role: "omp.composer.extras", grow: 1, gap: "xs", align: "center", wrap: true },
           segments.map((item) => actionButton2(item.label, `status.${item.key}`, { key: item.key, title: item.title })),
           "extras"
         ),
-        usage: node3("text", { role: "omp.composer.usage", text: b.usage ? `${b.usage.input.toLocaleString(locale)} ${t.input} \xB7 ${b.usage.output.toLocaleString(locale)} ${t.output}` : "", title: t.usage, wrap: "none" }, void 0, "usage")
+        usage: node4("text", { role: "omp.composer.usage", text: b.usage ? `${b.usage.input.toLocaleString(locale)} ${t.input} \xB7 ${b.usage.output.toLocaleString(locale)} ${t.output}` : "", title: t.usage, wrap: "none" }, void 0, "usage")
       };
     }
     composer.ui.terminal.setTitle(`Droid \xB7 ${b.session?.title || t.untitled}`);
     composer.ui.requestRender();
   }
-  async function open(id) {
+  async function open2(id) {
     pendingNew = null;
     if (busy()) throw new Error(text2("\u8BF7\u5148\u505C\u6B62\u5F53\u524D\u4EFB\u52A1\uFF0C\u518D\u5207\u6362\u4F1A\u8BDD\u3002", "Stop the active turn before switching conversations."));
-    const previousDraft = composer.editor.getExpandedText();
-    composer.editor.setText("");
-    const clearedRevision = draftRevision;
+    if (id !== void 0 && id === backend.state.session?.id) {
+      await backend.open(id);
+      return;
+    }
+    const transition = images.beginSessionChange();
     try {
       await backend.open(id);
+      transition.complete();
     } catch (error) {
-      if (draftRevision === clearedRevision) composer.editor.setText(previousDraft);
+      transition.rollback();
       throw error;
     }
   }
-  async function submit(message) {
-    if (!message.trim()) return;
-    const match = /^\/([a-z-]+)(?:\s+([\s\S]*))?$/.exec(message);
-    if (match?.[1] && commands.some((item) => item.name === match[1])) {
-      if (composer.editor.getExpandedText() === message) composer.editor.setText("");
+  async function submit(submission) {
+    const message = submission.text;
+    if (!message.trim() && !submission.images.length) return;
+    const match = !submission.images.length && /^\/([a-z-]+)(?:\s+([\s\S]*))?$/.exec(message);
+    if (match && match[1] && commands.some((item) => item.name === match[1])) {
+      images.accept(submission);
       await command(match[1], match[2]);
       return;
     }
@@ -2775,10 +3262,9 @@ async function run() {
     changed();
     try {
       await backend.send(message, () => {
-        composer.editor.addToHistory(message);
-        if (composer.editor.getExpandedText() === message) composer.editor.setText("");
+        images.accept(submission);
         changed();
-      });
+      }, submission.images);
     } finally {
       submitting = false;
       changed();
@@ -2791,8 +3277,13 @@ async function run() {
         return dialogs.sessions();
       case "context":
         return dialogs.context();
+      case "attach": {
+        const path = argument ?? await dialogs.input(t.attachImage, void 0, t.attachImageHint);
+        if (path?.trim()) await images.addPath(path);
+        return;
+      }
       case "resume":
-        return argument?.trim() ? open(argument.trim()) : dialogs.sessions();
+        return argument?.trim() ? open2(argument.trim()) : dialogs.sessions();
       case "more":
       case "help": {
         const selected = await dialogs.choose(text2("Droid \u4F1A\u8BDD\u64CD\u4F5C", "Droid conversation actions"), commands.filter((item) => item.name !== "help").map((item) => ({ value: item.name, label: `/${item.name}`, description: item.description })));
@@ -2806,7 +3297,7 @@ async function run() {
           await backend.interrupt();
           if (source && backend.state.session?.id === source) pendingNew = source;
           changed();
-        } else await open();
+        } else await open2();
         return;
       }
       case "model": {
@@ -2882,7 +3373,9 @@ async function run() {
     if (closing) return;
     closing = true;
     pendingNew = null;
+    composer.ui.terminal.setProgress(false);
     dialogs.dispose();
+    images.dispose();
     try {
       await backend.close();
     } finally {

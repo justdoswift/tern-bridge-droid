@@ -14,15 +14,16 @@
 
 ## UI 复用边界
 
-- 直接依赖固定版本 `@oh-my-pi/pi-tui`，使用其 `Composer`、`AssistantMessageComponent`、`UserMessageComponent`、`ToolExecutionComponent`、`SessionSelectorComponent`、`HookSelectorComponent`、`HookEditorComponent`、`ApprovalDialogComponent`、`AskDialogComponent`、`ReportPanel`、`ContextUsageView` 和 `todoChecklistPhases`；不复制或修改上游组件源码。
+- 直接依赖固定版本 `@oh-my-pi/pi-tui`，使用其 `Composer`、`AssistantMessageComponent`、`UserMessageComponent`、`ToolExecutionComponent`、`SessionSelectorComponent`、`HookSelectorComponent`、`HookEditorComponent`、`ApprovalDialogComponent`、`AskDialogComponent`、`ReportPanel`、`ContextUsageView`、`describeWorkingRow` 和 `todoChecklistPhases`；不复制或修改上游组件源码。
 - 助手正文、列表、代码、表格、图片与思考区直接由原版 `AssistantMessageComponent` 渲染，不再用零散 Markdown 和 Disclosure 拼装回答。连续内容形成同一个消息段，工具卡片按 Droid 的原始消息顺序穿插；独立代码、Diff 和工具输出仍沿用原版渲染。
 - Read 源码按文件路径标记语言，使用原生代码高亮，不伪造读取区间的起始行号。Grep 的内容结果按已知文件路径、实际行号和匹配/上下文标记，交给原版文件行与编号代码视图；不同语言分别着色。无法确认的内容、截断提示、文件名列表、计数、Execute 日志和错误保留原输出。预览只使用 Droid 已返回的数据，不读取本机文件补内容，也不启用 omp 工具执行器。
 - 流式状态只来自实际增量及块完成事件；定稿、中断与历史恢复不会留下假运行状态。未知的逐消息用量、费用和速度保持缺省，不拿会话累计量冒充单条用量。实时思考只使用原组件观察到的本次展示计时，历史思考不补造耗时；恢复与组件身份绑定 Droid 的真实会话及消息 ID。
-- 运行状态由原版 Composer 的忙碌样式和停止按钮表达，正文不额外插入“处理中 / Working”阶段标签。真实错误和恢复通知保留；不修改 Droid 的回答原文，也不追加格式提示词。
+- 任务执行时复用原版工作栏的指示器、观察计时和步骤文字；步骤取自实际运行工具的 `summary` 或工具名，不从普通回答或输出猜测。工作栏与 Todo 环形进度、完成数量一起对齐输入框，空间不足时自然换行。计时只覆盖本次观察到的运行，不补造恢复前的耗时。正文不额外插入“处理中 / Working”阶段标签，停止仍由原版 Composer 按钮处理。
+- Droid 执行期间，横向或竖向标签页显示小绿点；等待作者审批/回答、空闲、出错和关闭时不显示。执行状态通过原生 OSC 9;4 传给 Tern，插件只添加活动点样式，不改标签标题、作者设置的标签颜色或其他程序的状态。
 - 会话选择器仍是原版组件，只省略 Droid 不提供的会话文件大小等元数据。会话列表、模型选项、执行与审批只来自 Droid。
-- 底部“会话”“更多”、交互模式和自主权限使用上游 `actionButton` 的原生圆角按钮，保留原操作、模式值和权限确认；窄窗格仍遵循 Tern Composer 自身的压缩规则，slash 命令始终可用。
-- 点击输入框上方的上下文用量条，或输入 `/context`，立即打开原版报告面板并读取 Droid `getContextBreakdown()`。分类、总用量、容量和剩余空间来自 Droid；保留 MCP、用户上下文、AGENTS.md 与 Droid 配置等独立类别。接口不提供自动压缩阈值，不套用 omp 的 85% 或伪造预留量。旧 CLI 不支持或读取失败时在面板内重试，不改变会话执行状态，也不发送模型请求。
-- Droid 成功执行 `TodoWrite` 后，输入框上方显示原生任务进度条，点击展开清单。读取其编号、状态标签字符串中的 `pending`、`in_progress`、`completed`；未执行、失败、中断的写入不覆盖已确认清单，成功清空时移除面板，无法识别的新格式不沿用旧清单。历史恢复展示最后一次成功写入，切换会话不保留旧任务。不推断阶段、不代替 Droid 改任务，也不注入催办提示词。
+- 底部“会话”“更多”、交互模式、自主权限及“添加图片”使用上游 `actionButton` 的原生圆角按钮，保留原操作、模式值和权限确认；发送/连接出错时优先显示“重新连接会话”，避免它被可选按钮挤掉。窄窗格仍遵循 Tern Composer 自身的压缩规则。
+- 输入框上方只显示上下文用量百分比，不再显示 `250,000` 一类总容量数字；悬停提示与详情保留真实用量/容量。点击用量条，或输入 `/context`，立即打开原版报告面板并读取 Droid `getContextBreakdown()`。分类、总用量、容量和剩余空间来自 Droid；保留 MCP、用户上下文、AGENTS.md 与 Droid 配置等独立类别。接口不提供自动压缩阈值，不套用 omp 的 85% 或伪造预留量。旧 CLI 不支持或读取失败时在面板内重试，不改变会话执行状态，也不发送模型请求。
+- Droid 成功执行 `TodoWrite` 后，工作栏显示原生任务进度环、当前任务和完成数量，点击展开清单。读取其编号、状态标签字符串中的 `pending`、`in_progress`、`completed`；未执行、失败、中断的写入不覆盖已确认清单，成功清空时移除面板，无法识别的新格式不沿用旧清单。历史恢复展示最后一次成功写入，切换会话不保留旧任务。不推断阶段、不代替 Droid 改任务，也不注入催办提示词。
 - 不创建 omp `AgentSession`，不启动 omp 的模型循环，不读取 omp 的账号、模型配置或会话数据库。不是“由 omp 调用一次 Droid 工具”。
 - 插件自己的命令和提示提供中文/English；上游组件内部的英文文案保留原样。这不是 Tern 或 omp 的整套汉化包。
 
@@ -70,7 +71,7 @@ tern plugin link ./artifacts/package/tern-bridge-droid
 
 “更多”提供重命名、分叉、压缩和回退。回退先展示文件影响：**仅回退对话**不会请求恢复或删除文件；恢复文件必须单独确认。压缩可能调用模型并消耗当前 Droid 额度。
 
-输入 `/help` 可打开操作选择器。支持 `/new`、`/resume`（也可 `/resume 会话ID`）、`/model`、`/reasoning`、`/mode`、`/autonomy`、`/context`、`/rename`、`/fork`、`/compact`、`/rewind`、`/retry`、`/language`、`/quit`。补全跟随当前 Droid 会话的实际目录，而不是固定使用启动目录。
+输入 `/help` 可打开操作选择器。支持 `/new`、`/resume`（也可 `/resume 会话ID`）、`/model`、`/reasoning`、`/mode`、`/autonomy`、`/attach`、`/context`、`/rename`、`/fork`、`/compact`、`/rewind`、`/retry`、`/language`、`/quit`。补全跟随当前 Droid 会话的实际目录，而不是固定使用启动目录。已附图片时，输入按图片消息发送，不把消息中的 slash 文本误执行为命令；管理操作仍可使用底部按钮和快捷键。
 
 
 ### 输入与键盘
@@ -84,6 +85,15 @@ tern plugin link ./artifacts/package/tern-bridge-droid
 - 支持 Tern 原生选区、中文输入法提交、多行粘贴与 UTF-16 光标偏移。
 
 任务运行时可以继续写草稿，但不会偷偷排队发送。只有 Droid 确认记录了用户消息，客户端才清空相应草稿。连接失败不会自动重放消息；“重新连接”只重新加载会话。
+
+### 图片附件
+
+- 支持 **JPEG、PNG、GIF、WebP**。可显式粘贴剪贴板图片、把本地图片拖进输入框，或点击“添加图片 / Attach image”在原生输入面板填写路径；也可使用 `/attach 路径`。路径支持相对当前会话目录、绝对路径、`~`、带引号的路径和 `file://` URL。按钮打开路径输入面板，不是系统文件选择器。
+- 图片使用 omp 原版附件标记、编辑/删除和粘贴状态。允许只发送图片；实际图片通过 Droid SDK 的 base64 image 参数传递，不把标记或本机路径当作图片内容发送。
+- 只有 Droid 确认持久化了这条用户消息，才清空对应的文字和附件。失败、重连或迟到回执不清掉未接受的草稿；发送后继续编辑、增加附件时，也不会清掉新草稿。切换到另一个会话会移除旧会话附件，切换失败时保留可恢复的原草稿。
+- 明确不支持图片的模型会阻止发送并保留草稿；能力未知时让 Droid 实际处理，失败后不剥离图片、不重试、不自动切换模型。文件须通过原版解码器和大小限制，拒绝目录、设备与无效图片。
+- 只在作者显式粘贴时读取剪贴板。插件不新建持久图片缓存，不扫描目录，也不另行上传到第三方；已发送图片的保存遵循 Droid 自身的会话策略。
+
 
 ## 审批和 AskUser
 
@@ -120,4 +130,4 @@ bun dist/client.mjs --cwd . --data-dir ./artifacts/development-data
 
 可选参数：`--session ID`、`--pick-session`、`--locale zh-CN|en-US`、`--droid PATH`。`--help` 不连接 Droid；在非 Tern 终端中启动会明确失败，不生成伪造的回复或降级成假聊天界面。
 
-实现分为 Luau 启动器、原版 omp UI 的数据/操作绑定、Droid 协议与会话控制、历史消息归一化和跨进程会话锁。行为测试覆盖协议身份、消息合并、审批与取消、回退计划和锁归属；实际 Tern 检查覆盖原版组件呈现、会话恢复、中文/多行输入、审批、AskUser 和错误恢复。协议夹具不证明模型质量；仅一次已授权的真实 Droid 工具调用用于验证端到端连接，之后不重复付费请求。
+实现分为 Luau 启动器/标签活动样式、原版 omp UI 的数据/操作绑定、Droid 协议与会话控制、历史消息归一化和跨进程会话锁。行为测试覆盖协议身份、消息合并、审批与取消、回退计划、锁归属、运行步骤及真实原组件的图片草稿生命周期；实际 Tern 检查覆盖原版组件呈现、会话恢复、中文/多行输入、审批、AskUser、图片附件、任务工作栏和错误恢复。协议夹具不证明模型质量；仅一次已授权的真实 Droid 工具调用用于验证端到端连接，之后不重复付费请求。

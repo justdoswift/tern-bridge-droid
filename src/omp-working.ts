@@ -1,0 +1,48 @@
+import { Text } from '@oh-my-pi/pi-tui/components/text';
+import { describeWorkingRow } from '@oh-my-pi/pi-tui/components/loader';
+import { col, node, EMPTY_NODE } from '@oh-my-pi/pi-tui/native/describe';
+import type { DescribeContext, NativeNode } from '@oh-my-pi/pi-tui/native/node';
+import type { BackendState, Locale } from './contracts.js';
+import { dictionary } from './i18n.js';
+import { DroidWorkTracker, type WorkSnapshot } from './work-state.js';
+import type { DroidTodoHud } from './omp-todos.js';
+
+/** Stock working row in the stock status-HUD slot, not another transcript phase label. */
+export class DroidWorkingHud extends Text {
+  private readonly tracker = new DroidWorkTracker();
+  private snapshot: WorkSnapshot = { active: false };
+  private locale: Locale | undefined;
+  private label = '';
+  private native: NativeNode | undefined;
+
+  constructor(private readonly todos: DroidTodoHud) { super('', 0, 0); }
+
+  sync(state: BackendState, locale: Locale): void {
+    const snapshot = this.tracker.sync(state);
+    if (snapshot === this.snapshot && locale === this.locale) return;
+    this.snapshot = snapshot;
+    this.locale = locale;
+    this.native = undefined;
+    const t = dictionary(locale);
+    this.label = !snapshot.active ? '' : snapshot.stage === 'stopping' ? t.stop
+      : snapshot.step ?? (snapshot.stage === 'thinking' ? t.thinking : t.assistant);
+    this.setText(this.label);
+  }
+
+  override describe(cx: DescribeContext): NativeNode {
+    if (!this.snapshot.active) return this.todos.hasTasks()
+      ? node('row', { role: 'omp.hud', justify: 'end', gap: 'sm' }, [this.todos]) : EMPTY_NODE;
+    if (!this.native) {
+      const original = describeWorkingRow({ label: this.label, startedAt: this.snapshot.startedAt }, cx);
+      const working: NativeNode = original.k === 'row'
+        ? { ...original, p: { ...original.p, grow: 1, basis: 'content', min: { w: 0 } } } : original;
+      this.native = col([
+        node('row', { align: 'center', gap: 'sm', wrap: true }, [
+          working,
+          this.todos,
+        ]),
+      ], { role: 'omp.hud.status' });
+    }
+    return this.native;
+  }
+}
