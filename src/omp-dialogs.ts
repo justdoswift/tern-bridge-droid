@@ -8,6 +8,8 @@ import { SessionSelectorComponent, type SessionSelectorEntry } from '@oh-my-pi/p
 import type { DescribeContext, NativeNode } from '@oh-my-pi/pi-tui/native/node';
 import type { ApprovalOption, BridgeBackend, Locale, PendingApproval, PendingQuestion, QuestionAnswer, SessionSummary } from './contracts.js';
 import { dictionary } from './i18n.js';
+import { Text } from '@oh-my-pi/pi-tui/components/text';
+import { DroidContextLoading, DroidContextReport, DroidContextView } from './omp-context.js';
 
 export interface DialogChoice {
   value: string;
@@ -37,6 +39,7 @@ interface ModalState {
   component: Component;
   handle: OverlayHandle;
   owner?: PromptState;
+  sessionId?: string | null;
   cancel: () => void;
 }
 
@@ -213,6 +216,39 @@ export class DroidDialogs {
     });
   }
 
+  async context(): Promise<void> {
+    this.syncPrompts();
+    const sessionId = this.backend.state.session?.id ?? null;
+    await this.showModal<void>(controls => {
+      const locale = this.options.locale();
+      const t = dictionary(locale);
+      const close = () => controls.finish(undefined);
+      const loading = () => new DroidContextReport(t.context, new DroidContextLoading(locale), locale, close);
+      let pending = false;
+      const load = async (): Promise<void> => {
+        if (!controls.active() || pending) return;
+        pending = true;
+        try {
+          const details = await this.backend.contextDetails();
+          if (controls.active()) controls.replace(new DroidContextReport(
+            `${t.context} · ${details.modelDisplayName || details.modelId}`, new DroidContextView(details, locale), locale, close,
+          ));
+        } catch {
+          if (controls.active()) controls.replace(new DroidContextReport(
+            t.context, new Text(t.contextFailed, 0, 0), locale, close,
+            () => {
+              if (!controls.active() || pending) return;
+              controls.replace(loading());
+              void load();
+            },
+          ));
+        } finally { pending = false; }
+      };
+      queueMicrotask(() => { if (controls.active()) void load(); });
+      return loading();
+    }, undefined, sessionId);
+  }
+
   async choose(title: string, choices: DialogChoice[]): Promise<string | undefined> {
     this.syncPrompts();
     const offered = choices.map(choice => ({ ...choice }));
@@ -249,6 +285,7 @@ export class DroidDialogs {
     if (this.disposed) return undefined;
     const live = this.livePrompt();
     const sessionId = this.backend.state.session?.id;
+    if (this.modal?.sessionId !== undefined && this.modal.sessionId !== (sessionId ?? null)) this.modal.cancel();
     const signature = live ? JSON.stringify(live.source) : '';
     if (this.prompt && (!live || this.prompt.kind !== live.kind || this.prompt.source !== live.source ||
         this.prompt.sessionId !== sessionId || this.prompt.signature !== signature)) {
@@ -310,6 +347,7 @@ export class DroidDialogs {
 
   private modalCurrent(modal: ModalState): boolean {
     return !this.disposed && this.modal === modal &&
+      (modal.sessionId === undefined || modal.sessionId === (this.backend.state.session?.id ?? null)) &&
       (modal.owner ? this.current(modal.owner) : !this.livePrompt());
   }
 
@@ -318,7 +356,7 @@ export class DroidDialogs {
     this.composer.ui.setFocus(this.prompt?.component ?? this.composer.editor);
   }
 
-  private showModal<T>(create: (controls: ModalControls<T>) => Component, owner?: PromptState): Promise<T | undefined> {
+  private showModal<T>(create: (controls: ModalControls<T>) => Component, owner?: PromptState, sessionId?: string | null): Promise<T | undefined> {
     if (this.disposed || (owner ? !this.current(owner) : !!this.livePrompt())) return Promise.resolve(undefined);
     this.modal?.cancel();
     const { promise, resolve } = Promise.withResolvers<T | undefined>();
@@ -348,7 +386,7 @@ export class DroidDialogs {
       },
     });
     modal = {
-      component, owner, cancel: () => finish(undefined),
+      component, owner, sessionId, cancel: () => finish(undefined),
       handle: this.composer.ui.showOverlay(component, { width: '90%', maxHeight: '90%' }),
     };
     this.modal = modal;

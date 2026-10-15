@@ -29,6 +29,7 @@ class FakeClient {
   questionHandler: ((event: unknown) => unknown) | null = null;
   added = Promise.withResolvers<Sent>();
   responseGate: Promise<unknown> | null = null;
+  breakdownResponse: Promise<unknown> | null = null;
   sent: Sent[] = [];
   loads: string[] = [];
   closes = 0;
@@ -62,6 +63,12 @@ class FakeClient {
   }
   async listModels() { return { result: { models: [{ id: 'ordinary', displayName: 'Ordinary model', supportedReasoningEfforts: ['low', 'high'], defaultReasoningEffort: 'low' }] } }; }
   async getContextStats() { return { result: { used: 120, limit: 200_000 } }; }
+  async getContextBreakdown(): Promise<unknown> {
+    if (this.breakdownResponse) return this.breakdownResponse;
+    const error = new Error('private transport payload');
+    error.name = 'ProtocolError';
+    throw error;
+  }
   async addUserMessage(params: { text: string; messageId: string }, requestId: string) {
     const sent = { ...params, requestId }; this.sent.push(sent); this.added.resolve(sent);
     return this.responseGate ? await this.responseGate : { result: {} };
@@ -512,4 +519,50 @@ test('an unidentified terminal event fails a local send explicitly and retains S
   client.emit({ type: 'droid_working_state_changed', newState: 'idle' });
   assert.equal(bridge.state.phase, 'idle');
   assert.equal(bridge.state.needsInterrupt, false);
+});
+
+const contextReport = {
+  modelId: 'custom:selected', modelDisplayName: 'Selected custom model',
+  contextBudget: 200_000, usedTokens: 140, freeTokens: 199_860,
+  categories: [{ name: 'Messages', tokens: 140, colorKey: 'messages' }],
+  skills: [], mcpServers: [], droids: [], lastCallCompactionTokens: 123,
+};
+
+test('unsupported or malformed context accounting cannot fail or replace the active conversation', async t => {
+  const { bridge, client } = await fixture(t);
+  const before = structuredClone(bridge.state);
+  await assert.rejects(bridge.contextDetails(), error => {
+    assert.ok(error instanceof Error);
+    assert.doesNotMatch(error.message, /private transport payload/);
+    return true;
+  });
+  client.breakdownResponse = Promise.resolve({ result: { ...contextReport, usedTokens: 'invented' } });
+  await assert.rejects(bridge.contextDetails(), /supported context breakdown/);
+  assert.deepEqual(bridge.state, before);
+});
+
+test('context reports from a replaced session are rejected rather than shown under its successor', async t => {
+  const { bridge, client } = await fixture(t);
+  const gate = Promise.withResolvers<unknown>();
+  client.breakdownResponse = gate.promise;
+  const report = bridge.contextDetails();
+  const rejected = assert.rejects(report, /session changed/);
+  await bridge.fork();
+  gate.resolve({ result: contextReport });
+  await rejected;
+  assert.equal(bridge.state.session?.id, 'forked');
+  assert.deepEqual(bridge.state.context, { used: 120, limit: 200_000 });
+});
+
+test('an in-flight context report cannot survive a same-session settings reload', async t => {
+  const { bridge, client } = await fixture(t);
+  const gate = Promise.withResolvers<unknown>();
+  client.breakdownResponse = gate.promise;
+  const report = bridge.contextDetails();
+  const rejected = assert.rejects(report, /session changed/);
+  await bridge.updateSettings({ interactionMode: 'auto' });
+  gate.resolve({ result: contextReport });
+  await rejected;
+  assert.equal(bridge.state.session?.id, 'original');
+  assert.equal(bridge.state.session?.settings.interactionMode, 'auto');
 });

@@ -1,8 +1,13 @@
+import type { ContextBreakdownResult } from '@factory/droid-sdk';
+
+export type ContextDetails = Pick<ContextBreakdownResult,
+  'modelId' | 'modelDisplayName' | 'contextBudget' | 'usedTokens' | 'freeTokens' | 'categories'>;
+
 export type Locale = 'zh-CN' | 'en-US';
 export type Phase = 'disconnected' | 'connecting' | 'idle' | 'running' | 'approval' | 'question' | 'stopping' | 'error';
 export type MessageBlock =
   | { id: string; kind: 'text' | 'thinking' | 'code' | 'diff'; text: string; path?: string }
-  | { id: string; kind: 'tool'; name: string; args: string; output: string; status: 'running' | 'done' | 'error' | 'interrupted'; diff?: string }
+  | { id: string; kind: 'tool'; name: string; args: string; output: string; status: 'running' | 'done' | 'error' | 'interrupted'; resultReceived?: true; diff?: string }
   | { id: string; kind: 'image'; data: string; mime: string };
 export interface ChatMessage {
   id: string;
@@ -76,6 +81,7 @@ export interface BridgeBackend {
   readonly state: BackendState;
   open(sessionId?: string): Promise<void>;
   sessions(all: boolean): Promise<SessionSummary[]>;
+  contextDetails(): Promise<ContextDetails>;
   send(text: string, onAccepted: () => void): Promise<void>;
   interrupt(): Promise<void>;
   resolveApproval(requestId: string, value: string, editedSpecContent?: string): void;

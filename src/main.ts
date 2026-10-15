@@ -7,6 +7,7 @@ import { CombinedAutocompleteProvider } from '@oh-my-pi/pi-tui/autocomplete';
 import { Text } from '@oh-my-pi/pi-tui/components/text';
 import { ErrorBannerComponent } from '@oh-my-pi/pi-tui/overlays/error-banner';
 import { node, span } from '@oh-my-pi/pi-tui/native/describe';
+import { actionButton } from '@oh-my-pi/pi-tui/native/overlay';
 import { onNativeRenderingChange } from '@oh-my-pi/pi-tui/native/state';
 import { stopSharedSpinnerTicker } from '@oh-my-pi/pi-tui/chat/tool-execution';
 import type { ComposerFacts } from '@oh-my-pi/pi-tui/status-line/types';
@@ -15,6 +16,7 @@ import { DroidBridge } from './backend.js';
 import type { Locale } from './contracts.js';
 import { DroidTranscript } from './omp-transcript.js';
 import { DroidDialogs } from './omp-dialogs.js';
+import { DroidTodoHud } from './omp-todos.js';
 import { dictionary } from './i18n.js';
 
 const { values } = parseArgs({ options: {
@@ -76,6 +78,7 @@ async function run(): Promise<void> {
   const composer = new Composer({ preferences: { quiet: true, spellingAutocomplete: 'off', spellingTypoDetection: false }, exit: code => { process.exitCode = code; void shutdown(); } });
   const backend = new DroidBridge({ cwd, dataDir, execPath: values.droid ?? (typeof preferences.droidPath === 'string' ? preferences.droidPath : undefined), onChange: changed });
   const transcript = new DroidTranscript(composer.ui, cwd);
+  const todos = new DroidTodoHud();
   const dialogs = new DroidDialogs(composer, backend, { locale: () => locale, onError: report, onChange: changed, openSession: id => open(id) });
   composer.setHeaderExtras([identity], []);
   composer.editor.magicKeywordsEnabledOverride = false;
@@ -111,6 +114,7 @@ async function run(): Promise<void> {
     { name: 'mode', description: 'Droid: Auto / Spec' }, { name: 'autonomy', description: 'Droid: approval policy' },
     { name: 'rename', description: 'Droid: rename conversation' }, { name: 'fork', description: 'Droid: fork conversation' },
     { name: 'compact', description: 'Droid: compact context (may use model quota)' }, { name: 'rewind', description: 'Droid: inspect rewind' },
+    { name: 'context', description: 'Droid: context usage breakdown' },
     { name: 'retry', description: 'Droid: reconnect without replay' }, { name: 'language', description: 'Bridge: 中文 / English' },
     { name: 'help', description: 'Bridge: conversation actions' }, { name: 'quit', description: 'Bridge: close client' },
   ];
@@ -166,9 +170,10 @@ async function run(): Promise<void> {
     identity.setText(`Droid · ${b.session?.title || t.untitled}`);
     notice.setText(b.notice ?? '');
     transcript.sync(b);
+    todos.sync(b, locale);
     const prompt = dialogs.syncPrompts();
     composer.editor.disableSubmit = submitting || ['connecting', 'running', 'approval', 'question', 'stopping'].includes(b.phase) || b.needsInterrupt;
-    composer.setRuntimeChildren([transcript.container, ...(banner ? [banner] : []), ...(b.notice ? [notice] : []), prompt ?? composer.editor]);
+    composer.setRuntimeChildren([transcript.container, ...(banner ? [banner] : []), ...(b.notice ? [notice] : []), todos, prompt ?? composer.editor]);
     if (prompt !== mountedPrompt) {
       mountedPrompt = prompt;
       if (!dialogs.hasOverlay()) composer.ui.setFocus(prompt ?? composer.editor);
@@ -179,16 +184,19 @@ async function run(): Promise<void> {
     if (key !== factsKey) {
       factsKey = key;
       const segments = [
-        { key: 'sessions', label: t.sessions }, { key: 'more', label: t.more },
-        { key: 'mode', label: settings?.interactionMode || t.mode }, { key: 'autonomy', label: settings?.autonomyLevel || t.autonomy },
-        ...(['error', 'disconnected'].includes(b.phase) ? [{ key: 'retry', label: t.reconnect }] : []),
+        { key: 'sessions', label: t.sessions, title: t.sessions }, { key: 'more', label: t.more, title: t.more },
+        { key: 'mode', label: settings?.interactionMode || t.mode, title: `${t.mode}: ${settings?.interactionMode || t.unknown}` },
+        { key: 'autonomy', label: settings?.autonomyLevel || t.autonomy, title: `${t.autonomy}: ${settings?.autonomyLevel || t.unknown}` },
+        ...(['error', 'disconnected'].includes(b.phase) ? [{ key: 'retry', label: t.reconnect, title: t.reconnectHint }] : []),
       ];
       facts = {
-        context: node('meter', { role: 'omp.composer.context', style: 'bar', value: b.context && b.context.limit > 0 ? Math.min(1, b.context.used / b.context.limit) : null,
+        context: node('meter', { role: 'omp.composer.context', style: 'bar', actions: { click: 'status.context' }, aria: t.context,
+          value: b.context && b.context.limit > 0 ? Math.min(1, b.context.used / b.context.limit) : null,
           ...(b.context ? { label: `${Math.round(b.context.used / b.context.limit * 100)}%`, total: b.context.limit.toLocaleString(locale) } : {}),
           title: `${t.context}: ${b.context ? `${b.context.used.toLocaleString(locale)} / ${b.context.limit.toLocaleString(locale)}` : t.unknown}` }, undefined, 'context'),
         model: { spans: [span(`Droid · ${selected?.label || settings?.modelId || t.default}`)], title: t.model },
-        extras: node('status', { role: 'omp.composer.extras', transparent: true, grow: 1 }, segments.map(item => node('seg', { spans: [span(item.label)], actions: { click: `status.${item.key}` } }, undefined, item.key)), 'extras'),
+        extras: node('row', { role: 'omp.composer.extras', grow: 1, gap: 'xs', align: 'center', wrap: true },
+          segments.map(item => actionButton(item.label, `status.${item.key}`, { key: item.key, title: item.title })), 'extras'),
         usage: node('text', { role: 'omp.composer.usage', text: b.usage ? `${b.usage.input.toLocaleString(locale)} ${t.input} · ${b.usage.output.toLocaleString(locale)} ${t.output}` : '', title: t.usage, wrap: 'none' }, undefined, 'usage'),
       };
     }
@@ -232,6 +240,7 @@ async function run(): Promise<void> {
     const t = dictionary(locale);
     switch (name) {
       case 'sessions': return dialogs.sessions();
+      case 'context': return dialogs.context();
       case 'resume': return argument?.trim() ? open(argument.trim()) : dialogs.sessions();
       case 'more': case 'help': {
         const selected = await dialogs.choose(text('Droid 会话操作', 'Droid conversation actions'), commands.filter(item => item.name !== 'help').map(item => ({ value: item.name, label: `/${item.name}`, description: item.description })));

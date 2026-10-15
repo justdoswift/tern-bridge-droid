@@ -168,6 +168,7 @@ export class Transcript {
     const tool = this.tool(id, 'Tool');
     if (content !== undefined) tool.block.output = textContent(content);
     tool.block.status = isError ? 'error' : 'done';
+    tool.block.resultReceived = true;
     if (messageId) tool.resultMessageId = messageId;
     if (Array.isArray(content)) {
       tool.images = content.flatMap((value: unknown, index: number) => {

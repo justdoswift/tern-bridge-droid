@@ -5,9 +5,10 @@ import { join as join2, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { Composer } from "@oh-my-pi/pi-tui/prompt/composer";
 import { CombinedAutocompleteProvider } from "@oh-my-pi/pi-tui/autocomplete";
-import { Text as Text2 } from "@oh-my-pi/pi-tui/components/text";
+import { Text as Text5 } from "@oh-my-pi/pi-tui/components/text";
 import { ErrorBannerComponent } from "@oh-my-pi/pi-tui/overlays/error-banner";
-import { node, span } from "@oh-my-pi/pi-tui/native/describe";
+import { node as node3, span as span2 } from "@oh-my-pi/pi-tui/native/describe";
+import { actionButton as actionButton2 } from "@oh-my-pi/pi-tui/native/overlay";
 import { onNativeRenderingChange } from "@oh-my-pi/pi-tui/native/state";
 import { stopSharedSpinnerTicker } from "@oh-my-pi/pi-tui/chat/tool-execution";
 
@@ -20,6 +21,7 @@ import {
   ReasoningEffort,
   DroidInteractionMode,
   ToolConfirmationOutcome,
+  ContextBreakdownResultSchema,
   listSessions,
   resolveExecCoreDeps
 } from "@factory/droid-sdk/node";
@@ -264,6 +266,7 @@ var Transcript = class {
     const tool = this.tool(id, "Tool");
     if (content !== void 0) tool.block.output = textContent(content);
     tool.block.status = isError ? "error" : "done";
+    tool.block.resultReceived = true;
     if (messageId) tool.resultMessageId = messageId;
     if (Array.isArray(content)) {
       tool.images = content.flatMap((value, index) => {
@@ -408,9 +411,22 @@ var DroidBridge = class {
       throw this.report(error, "List sessions");
     }
   }
-  async send(text, onAccepted) {
+  async contextDetails() {
     const scope = this.ready();
-    if (!text.trim()) throw new BridgeFailure("Enter a message before sending.");
+    const revision = scope.revision;
+    try {
+      const response = result(await scope.client.getContextBreakdown());
+      if (this.scope !== scope || scope.revision !== revision) throw new BridgeFailure("The session changed while reading context usage.");
+      const parsed = ContextBreakdownResultSchema.safeParse(response);
+      if (!parsed.success) throw new BridgeFailure("Droid did not return a supported context breakdown. Check the CLI version.");
+      return parsed.data;
+    } catch (error) {
+      throw failure(error, "Read context usage");
+    }
+  }
+  async send(text2, onAccepted) {
+    const scope = this.ready();
+    if (!text2.trim()) throw new BridgeFailure("Enter a message before sending.");
     if (this.active || this.operation || this.state.phase !== "idle") throw new BridgeFailure("Droid already has active work. Stop it or wait before sending another message.");
     if (scope.unansweredSnapshots.size) throw new BridgeFailure(PENDING_SNAPSHOT_NOTICE);
     const { promise: done, resolve: resolveDone, reject: rejectDone } = Promise.withResolvers();
@@ -438,7 +454,7 @@ var DroidBridge = class {
     this.changed();
     try {
       await Promise.race([
-        scope.client.addUserMessage({ text, messageId: turn.messageId }, turn.requestId).then(result),
+        scope.client.addUserMessage({ text: text2, messageId: turn.messageId }, turn.requestId).then(result),
         done
       ]);
       await done;
@@ -1140,9 +1156,9 @@ var DroidToolCard = class extends ToolExecutionComponent {
         ...numberedCode(part.lines, { lang: part.lang })
       ], { gap: "xs", role: "omp.tool.search.file" }), `source-${index}`)];
     });
-    const node2 = { ...original, c: [...body, ...original.c.slice(1)] };
-    this.projection = { original, node: node2 };
-    return node2;
+    const node4 = { ...original, c: [...body, ...original.c.slice(1)] };
+    this.projection = { original, node: node4 };
+    return node4;
   }
   setExpanded(expanded) {
     this.expanded = expanded;
@@ -1353,7 +1369,7 @@ var DroidBlock = class extends Container {
         this.disposeChildren();
         if (this.currentImageKey) this.ui.imageBudget.release(this.currentImageKey);
         this.currentImageKey = `${this.imageKey}:${++this.imageRevision}`;
-        this.addChild(new Image(block.data, block.mime, { fallbackColor: (text) => theme.fg("dim", text) }, {
+        this.addChild(new Image(block.data, block.mime, { fallbackColor: (text2) => theme.fg("dim", text2) }, {
           imageKey: this.currentImageKey,
           budget: this.ui.imageBudget,
           requestRender: () => this.ui.requestRender()
@@ -1596,6 +1612,21 @@ var en = {
   usage: "Tokens",
   input: "in",
   output: "out",
+  contextLoading: "Loading context usage\u2026",
+  contextFailed: "Context usage is unavailable. Check the Droid CLI version and connection, then retry.",
+  contextUnavailable: "Droid has not reported a context budget for this session.",
+  contextFree: "Free space",
+  contextThresholdUnknown: "Droid does not report its auto-compaction threshold through this API.",
+  contextSystemPrompt: "System prompt",
+  contextSystemTools: "System tools",
+  contextMcpTools: "MCP tools",
+  contextUserInfo: "User context",
+  contextAgentsMd: "AGENTS.md",
+  contextDroids: "Droids",
+  contextSkills: "Skills",
+  contextMessages: "Messages",
+  retry: "Retry",
+  tasks: "Tasks",
   thinking: "Thinking",
   user: "You",
   assistant: "Droid",
@@ -1674,6 +1705,21 @@ var zh = {
   usage: "Token",
   input: "\u8F93\u5165",
   output: "\u8F93\u51FA",
+  contextLoading: "\u6B63\u5728\u8BFB\u53D6\u4E0A\u4E0B\u6587\u7528\u91CF\u2026",
+  contextFailed: "\u6682\u65F6\u65E0\u6CD5\u8BFB\u53D6\u4E0A\u4E0B\u6587\u7528\u91CF\u3002\u8BF7\u68C0\u67E5 Droid CLI \u7248\u672C\u548C\u8FDE\u63A5\u540E\u91CD\u8BD5\u3002",
+  contextUnavailable: "Droid \u5C1A\u672A\u63D0\u4F9B\u6B64\u4F1A\u8BDD\u7684\u4E0A\u4E0B\u6587\u5BB9\u91CF\u3002",
+  contextFree: "\u5269\u4F59\u7A7A\u95F4",
+  contextThresholdUnknown: "Droid \u672A\u901A\u8FC7\u6B64\u63A5\u53E3\u63D0\u4F9B\u81EA\u52A8\u538B\u7F29\u9608\u503C\u3002",
+  contextSystemPrompt: "\u7CFB\u7EDF\u63D0\u793A\u8BCD",
+  contextSystemTools: "\u7CFB\u7EDF\u5DE5\u5177",
+  contextMcpTools: "MCP \u5DE5\u5177",
+  contextUserInfo: "\u7528\u6237\u4E0A\u4E0B\u6587",
+  contextAgentsMd: "AGENTS.md",
+  contextDroids: "Droid \u914D\u7F6E",
+  contextSkills: "\u6280\u80FD",
+  contextMessages: "\u4F1A\u8BDD\u6D88\u606F",
+  retry: "\u91CD\u8BD5",
+  tasks: "\u4EFB\u52A1",
   thinking: "\u601D\u8003\u8FC7\u7A0B",
   user: "\u4F60",
   assistant: "Droid",
@@ -1733,6 +1779,129 @@ var zh = {
 function dictionary(locale) {
   return locale === "zh-CN" ? zh : en;
 }
+
+// src/omp-dialogs.ts
+import { Text as Text3 } from "@oh-my-pi/pi-tui/components/text";
+
+// src/omp-context.ts
+import { Text as Text2 } from "@oh-my-pi/pi-tui/components/text";
+import { ContextUsageView } from "@oh-my-pi/pi-tui/status-line/context-usage";
+import { ReportPanel } from "@oh-my-pi/pi-tui/overlays/report-panel";
+import { actionBar, actionButton } from "@oh-my-pi/pi-tui/native/overlay";
+import { col as col2, node, span, text } from "@oh-my-pi/pi-tui/native/describe";
+import { theme as theme2 } from "@oh-my-pi/pi-tui/theme";
+var DroidContextView = class extends ContextUsageView {
+  constructor(details, locale) {
+    const t = dictionary(locale);
+    const categories = {
+      systemPrompt: [t.contextSystemPrompt, "accent"],
+      systemTools: [t.contextSystemTools, "warning"],
+      mcpTools: [t.contextMcpTools, "warning"],
+      userInfo: [t.contextUserInfo, "customMessageLabel"],
+      agentsMd: [t.contextAgentsMd, "customMessageLabel"],
+      customAgents: [t.contextDroids, "customMessageLabel"],
+      skills: [t.contextSkills, "success"],
+      messages: [t.contextMessages, "userMessageText"]
+    };
+    super({
+      model: void 0,
+      contextWindow: details.contextBudget,
+      usedTokens: details.usedTokens,
+      freeTokens: details.freeTokens,
+      autoCompactBufferTokens: 0,
+      categories: details.categories.map((category, index) => ({
+        // In the pinned omp view this closed type is only an opaque sibling key.
+        // Droid has eight categories, not omp's five; retain each one separately.
+        id: `droid-${index}`,
+        label: locale === "zh-CN" ? categories[category.colorKey][0] : category.name,
+        tokens: category.tokens,
+        color: categories[category.colorKey][1],
+        glyph: "\u25A0"
+      }))
+    }, theme2);
+    this.details = details;
+    this.locale = locale;
+  }
+  projected;
+  describe(cx) {
+    const t = dictionary(this.locale);
+    if (!(this.details.contextBudget > 0)) return text(t.contextUnavailable);
+    const original = super.describe(cx);
+    if (this.projected?.original === original) return this.projected.node;
+    const count = (value) => value.toLocaleString(this.locale);
+    const percent = new Intl.NumberFormat(this.locale, { style: "percent", maximumFractionDigits: 1 });
+    const project = (source) => {
+      const children = source.c?.map((child) => "k" in child ? project(child) : child);
+      if (source.k === "text" && source.p?.role === "omp.context.used") return {
+        ...source,
+        p: { ...source.p, spans: [
+          span(count(this.details.usedTokens), "strong"),
+          span(` / ${count(this.details.contextBudget)} tokens \xB7 ${percent.format(this.details.usedTokens / this.details.contextBudget)}`, "dim")
+        ] }
+      };
+      if (source.k === "text" && source.p?.role === "omp.context.room") return {
+        ...source,
+        p: { ...source.p, text: `${t.contextFree}: ${count(this.details.freeTokens)}` }
+      };
+      if (source.k === "row" && source.p?.role === "omp.context.cat.free") return {
+        ...source,
+        p: { ...source.p, title: `${t.contextFree} \xB7 ${count(this.details.freeTokens)} tokens` },
+        c: children?.map((child) => "k" in child && child.k === "text" && child.p?.role === "omp.context.label" ? { ...child, p: { ...child.p, text: t.contextFree } } : child)
+      };
+      if (source.k === "meter" && source.p) return {
+        ...source,
+        p: {
+          ...source.p,
+          aria: t.context,
+          parts: source.p?.parts?.map((part) => part.token === "track" ? { ...part, label: `${t.contextFree} \xB7 ${count(this.details.freeTokens)} tokens` } : part)
+        }
+      };
+      return { ...source, ...children ? { c: children } : {} };
+    };
+    const projected = col2([project(original), text(t.contextThresholdUnknown, { role: "omp.context.snap.note" })], { gap: "md" });
+    this.projected = { original, node: projected };
+    return projected;
+  }
+};
+var DroidContextLoading = class extends Text2 {
+  native;
+  constructor(locale) {
+    const label = dictionary(locale).contextLoading;
+    super(label, 0, 0);
+    this.native = node("row", { gap: "sm", align: "center" }, [node("spinner", {}), text(label)]);
+  }
+  describe() {
+    return this.native;
+  }
+};
+var DroidContextReport = class extends ReportPanel {
+  constructor(title, body, locale, close, retry) {
+    super({ title, body, closeKey: "Esc", onClose: close });
+    this.locale = locale;
+    this.retry = retry;
+    this.holdFocus();
+  }
+  projected;
+  describe() {
+    const original = super.describe();
+    if (this.projected?.original === original) return this.projected.node;
+    const t = dictionary(this.locale);
+    const projected = { ...original, c: [
+      original.c[0],
+      actionBar([
+        ...this.retry ? [actionButton(t.retry, "context.retry")] : [],
+        null,
+        actionButton(t.close, "close", { keys: "escape" })
+      ])
+    ] };
+    this.projected = { original, node: projected };
+    return projected;
+  }
+  handleNativeEvent(event) {
+    if (event.type === "action" && event.act === "context.retry") this.retry?.();
+    else super.handleNativeEvent(event);
+  }
+};
 
 // src/omp-dialogs.ts
 var DroidModalSelector = class extends HookSelectorComponent {
@@ -1797,7 +1966,7 @@ var DroidDialogs = class {
   async sessions() {
     this.syncPrompts();
     await this.showModal((controls) => {
-      const text = dictionary(this.options.locale());
+      const text2 = dictionary(this.options.locale());
       let generation = 0;
       let opening = false;
       const missingDates = /* @__PURE__ */ new Set();
@@ -1836,7 +2005,7 @@ var DroidDialogs = class {
             this.options.onChange();
           });
         }, close, close, {
-          title: loading ? text.loading : text.sessions,
+          title: loading ? text2.loading : text2.sessions,
           showCwd: false,
           currentSessionPath: () => this.backend.state.session?.id,
           getTerminalRows: () => this.composer.ui.terminal.rows,
@@ -1854,7 +2023,7 @@ var DroidDialogs = class {
           }
         });
         component.missingDates = missingDates;
-        component.loadingMessage = loading ? text.loading : void 0;
+        component.loadingMessage = loading ? text2.loading : void 0;
         component.getSessionList().onDeleteRequest = void 0;
         component.setOnRequestRender(() => {
           if (controls.active()) this.options.onChange();
@@ -1871,9 +2040,9 @@ var DroidDialogs = class {
           this.options.onError(error);
           const retry = this.options.locale() === "zh-CN" ? "\u91CD\u8BD5" : "Retry";
           controls.replace(new DroidModalSelector(
-            `${text.sessions}
+            `${text2.sessions}
 ${error instanceof Error ? error.message : String(error)}`,
-            [retry, text.cancel],
+            [retry, text2.cancel],
             (selected) => {
               if (!controls.active()) return;
               if (selected !== retry) {
@@ -1893,6 +2062,48 @@ ${error instanceof Error ? error.message : String(error)}`,
       });
       return picker([], true);
     });
+  }
+  async context() {
+    this.syncPrompts();
+    const sessionId = this.backend.state.session?.id ?? null;
+    await this.showModal((controls) => {
+      const locale = this.options.locale();
+      const t = dictionary(locale);
+      const close = () => controls.finish(void 0);
+      const loading = () => new DroidContextReport(t.context, new DroidContextLoading(locale), locale, close);
+      let pending = false;
+      const load = async () => {
+        if (!controls.active() || pending) return;
+        pending = true;
+        try {
+          const details = await this.backend.contextDetails();
+          if (controls.active()) controls.replace(new DroidContextReport(
+            `${t.context} \xB7 ${details.modelDisplayName || details.modelId}`,
+            new DroidContextView(details, locale),
+            locale,
+            close
+          ));
+        } catch {
+          if (controls.active()) controls.replace(new DroidContextReport(
+            t.context,
+            new Text3(t.contextFailed, 0, 0),
+            locale,
+            close,
+            () => {
+              if (!controls.active() || pending) return;
+              controls.replace(loading());
+              void load();
+            }
+          ));
+        } finally {
+          pending = false;
+        }
+      };
+      queueMicrotask(() => {
+        if (controls.active()) void load();
+      });
+      return loading();
+    }, void 0, sessionId);
   }
   async choose(title, choices) {
     this.syncPrompts();
@@ -1933,6 +2144,7 @@ ${detail}` }
     if (this.disposed) return void 0;
     const live = this.livePrompt();
     const sessionId = this.backend.state.session?.id;
+    if (this.modal?.sessionId !== void 0 && this.modal.sessionId !== (sessionId ?? null)) this.modal.cancel();
     const signature = live ? JSON.stringify(live.source) : "";
     if (this.prompt && (!live || this.prompt.kind !== live.kind || this.prompt.source !== live.source || this.prompt.sessionId !== sessionId || this.prompt.signature !== signature)) {
       const old = this.prompt;
@@ -1986,13 +2198,13 @@ ${detail}` }
     return !this.disposed && this.prompt === prompt && !prompt.settled && this.backend.state.session?.id === prompt.sessionId && live?.kind === prompt.kind && live.source === prompt.source && JSON.stringify(live.source) === prompt.signature;
   }
   modalCurrent(modal) {
-    return !this.disposed && this.modal === modal && (modal.owner ? this.current(modal.owner) : !this.livePrompt());
+    return !this.disposed && this.modal === modal && (modal.sessionId === void 0 || modal.sessionId === (this.backend.state.session?.id ?? null)) && (modal.owner ? this.current(modal.owner) : !this.livePrompt());
   }
   focus() {
     if (this.disposed || this.modal) return;
     this.composer.ui.setFocus(this.prompt?.component ?? this.composer.editor);
   }
-  showModal(create, owner2) {
+  showModal(create, owner2, sessionId) {
     if (this.disposed || (owner2 ? !this.current(owner2) : !!this.livePrompt())) return Promise.resolve(void 0);
     this.modal?.cancel();
     const { promise, resolve: resolve2 } = Promise.withResolvers();
@@ -2027,6 +2239,7 @@ ${detail}` }
     modal = {
       component,
       owner: owner2,
+      sessionId,
       cancel: () => finish(void 0),
       handle: this.composer.ui.showOverlay(component, { width: "90%", maxHeight: "90%" })
     };
@@ -2070,12 +2283,12 @@ ${detail}` }
   approvalChoices(prompt) {
     if (!this.current(prompt)) return;
     const request = prompt.source;
-    const text = dictionary(this.options.locale());
+    const text2 = dictionary(this.options.locale());
     const offered = request.options.map((option) => ({ ...option }));
     const choices = offered.map((option) => ({
       value: option.value,
       label: option.label,
-      description: option.persistent ? text.persistentHint : void 0,
+      description: option.persistent ? text2.persistentHint : void 0,
       disabledReason: option.disabledReason ?? (option.value.startsWith("proceed_new_session") ? "Droid SDK cannot identify a new implementation session. Use an offered current-session outcome." : void 0)
     }));
     const rows = this.choiceRows(choices);
@@ -2085,8 +2298,8 @@ ${detail}` }
         request.title,
         request.detail,
         request.plan,
-        offered.some((option) => option.persistent) ? text.persistentHint : "",
-        offered.length ? "" : text.noPermissions
+        offered.some((option) => option.persistent) ? text2.persistentHint : "",
+        offered.length ? "" : text2.noPermissions
       ].filter(Boolean).join("\n\n"),
       rows,
       (label) => {
@@ -2100,7 +2313,7 @@ ${detail}` }
           return;
         }
         if (option.value === "proceed_edit") {
-          void this.edit(text.editPlanHint, request.plan ?? "", request.detail, prompt).then((content) => {
+          void this.edit(text2.editPlanHint, request.plan ?? "", request.detail, prompt).then((content) => {
             if (!this.current(prompt)) return;
             if (content === void 0) {
               this.approvalChoices(prompt);
@@ -2134,14 +2347,14 @@ ${detail}` }
   }
   approvalConfirmation(prompt, option, edited) {
     const request = prompt.source;
-    const text = dictionary(this.options.locale());
+    const text2 = dictionary(this.options.locale());
     const full = [
       request.title,
       option.label,
       request.detail,
       edited ?? request.plan,
-      request.plan ? text.planHint : "",
-      option.persistent ? text.persistentHint : ""
+      request.plan ? text2.planHint : "",
+      option.persistent ? text2.persistentHint : ""
     ].filter(Boolean).join("\n\n");
     const confirmation = new ApprovalDialogComponent(full, {
       onApprove: () => {
@@ -2230,6 +2443,74 @@ ${detail}` }
   }
 };
 
+// src/omp-todos.ts
+import { Text as Text4 } from "@oh-my-pi/pi-tui/components/text";
+import { EMPTY_NODE, node as node2, stableKey } from "@oh-my-pi/pi-tui/native/describe";
+import { todoChecklistPhases } from "@oh-my-pi/pi-tui/tools/todo";
+
+// src/droid-todos.ts
+function parseDroidTodos(args) {
+  let source;
+  try {
+    source = record(JSON.parse(args)).todos;
+  } catch {
+    return void 0;
+  }
+  if (typeof source !== "string") return void 0;
+  const tasks = [];
+  for (const line of source.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    const match = /^\s*(?:\d+\.\s*)?\[(pending|in_progress|completed)\]\s+(.+?)\s*$/.exec(line);
+    if (match) {
+      tasks.push({ content: match[2], status: match[1] });
+    } else if (/^\s+\S/.test(line) && !/^\s*(?:\d+\.\s*)?\[/.test(line) && tasks.length) {
+      tasks[tasks.length - 1].content += `
+${line.trim()}`;
+    } else return void 0;
+  }
+  return tasks;
+}
+function latestDroidTodo(messages) {
+  for (let m = messages.length - 1; m >= 0; m--) {
+    const message = messages[m];
+    if (message.role !== "assistant") continue;
+    for (let b = message.blocks.length - 1; b >= 0; b--) {
+      const block = message.blocks[b];
+      if (block.kind === "tool" && block.name === "TodoWrite" && block.status === "done" && block.resultReceived) return block;
+    }
+  }
+  return void 0;
+}
+
+// src/omp-todos.ts
+var DroidTodoHud = class extends Text4 {
+  native = EMPTY_NODE;
+  source;
+  locale;
+  sessionId;
+  constructor() {
+    super("", 0, 0);
+  }
+  sync(state, locale) {
+    const sessionId = state.session?.id ?? null;
+    const source = sessionId ? latestDroidTodo(state.messages)?.args : void 0;
+    if (this.source === source && this.locale === locale && this.sessionId === sessionId) return;
+    this.source = source;
+    this.locale = locale;
+    this.sessionId = sessionId;
+    const tasks = source === void 0 ? void 0 : parseDroidTodos(source);
+    this.native = tasks?.length ? node2("checklist", {
+      mode: "hud",
+      role: "omp.todo.hud",
+      phases: todoChecklistPhases([{ name: dictionary(locale).tasks, tasks }])
+    }, void 0, stableKey(sessionId)) : EMPTY_NODE;
+    this.setText(tasks?.map((task) => `${task.status === "completed" ? "[x]" : task.status === "in_progress" ? "[>]" : "[ ]"} ${task.content}`).join("\n") ?? "");
+  }
+  describe() {
+    return this.native;
+  }
+};
+
 // src/main.ts
 var { values } = parseArgs({ options: {
   cwd: { type: "string" },
@@ -2258,9 +2539,9 @@ async function run() {
     if (error.code !== "ENOENT" && !(error instanceof SyntaxError)) throw error;
   }
   let locale = values.locale === "en-US" || !values.locale && preferences.locale === "en-US" ? "en-US" : "zh-CN";
-  const text = (zh2, en2) => locale === "zh-CN" ? zh2 : en2;
+  const text2 = (zh2, en2) => locale === "zh-CN" ? zh2 : en2;
   if (process.env.TERM_PROGRAM?.toLowerCase() !== "tern" || !process.stdin.isTTY) {
-    process.stderr.write(text("\u8BF7\u5728 Tern \u7684\u672C\u673A\u7A97\u683C\u4E2D\u6253\u5F00\u6B64\u5BA2\u6237\u7AEF\u3002\n", "Open this client in a local Tern pane.\n"));
+    process.stderr.write(text2("\u8BF7\u5728 Tern \u7684\u672C\u673A\u7A97\u683C\u4E2D\u6253\u5F00\u6B64\u5BA2\u6237\u7AEF\u3002\n", "Open this client in a local Tern pane.\n"));
     process.exitCode = 1;
     return;
   }
@@ -2283,14 +2564,15 @@ async function run() {
   let expanded = false;
   let draftRevision = 0;
   let autocompleteCwd = "";
-  const notice = new Text2("");
-  const identity = new Text2("Droid");
+  const notice = new Text5("");
+  const identity = new Text5("Droid");
   const composer = new Composer({ preferences: { quiet: true, spellingAutocomplete: "off", spellingTypoDetection: false }, exit: (code2) => {
     process.exitCode = code2;
     void shutdown();
   } });
   const backend = new DroidBridge({ cwd, dataDir, execPath: values.droid ?? (typeof preferences.droidPath === "string" ? preferences.droidPath : void 0), onChange: changed });
   const transcript = new DroidTranscript(composer.ui, cwd);
+  const todos = new DroidTodoHud();
   const dialogs = new DroidDialogs(composer, backend, { locale: () => locale, onError: report, onChange: changed, openSession: (id) => open(id) });
   composer.setHeaderExtras([identity], []);
   composer.editor.magicKeywordsEnabledOverride = false;
@@ -2349,6 +2631,7 @@ async function run() {
     { name: "fork", description: "Droid: fork conversation" },
     { name: "compact", description: "Droid: compact context (may use model quota)" },
     { name: "rewind", description: "Droid: inspect rewind" },
+    { name: "context", description: "Droid: context usage breakdown" },
     { name: "retry", description: "Droid: reconnect without replay" },
     { name: "language", description: "Bridge: \u4E2D\u6587 / English" },
     { name: "help", description: "Bridge: conversation actions" },
@@ -2423,9 +2706,10 @@ async function run() {
     identity.setText(`Droid \xB7 ${b.session?.title || t.untitled}`);
     notice.setText(b.notice ?? "");
     transcript.sync(b);
+    todos.sync(b, locale);
     const prompt = dialogs.syncPrompts();
     composer.editor.disableSubmit = submitting || ["connecting", "running", "approval", "question", "stopping"].includes(b.phase) || b.needsInterrupt;
-    composer.setRuntimeChildren([transcript.container, ...banner ? [banner] : [], ...b.notice ? [notice] : [], prompt ?? composer.editor]);
+    composer.setRuntimeChildren([transcript.container, ...banner ? [banner] : [], ...b.notice ? [notice] : [], todos, prompt ?? composer.editor]);
     if (prompt !== mountedPrompt) {
       mountedPrompt = prompt;
       if (!dialogs.hasOverlay()) composer.ui.setFocus(prompt ?? composer.editor);
@@ -2436,23 +2720,30 @@ async function run() {
     if (key !== factsKey) {
       factsKey = key;
       const segments = [
-        { key: "sessions", label: t.sessions },
-        { key: "more", label: t.more },
-        { key: "mode", label: settings2?.interactionMode || t.mode },
-        { key: "autonomy", label: settings2?.autonomyLevel || t.autonomy },
-        ...["error", "disconnected"].includes(b.phase) ? [{ key: "retry", label: t.reconnect }] : []
+        { key: "sessions", label: t.sessions, title: t.sessions },
+        { key: "more", label: t.more, title: t.more },
+        { key: "mode", label: settings2?.interactionMode || t.mode, title: `${t.mode}: ${settings2?.interactionMode || t.unknown}` },
+        { key: "autonomy", label: settings2?.autonomyLevel || t.autonomy, title: `${t.autonomy}: ${settings2?.autonomyLevel || t.unknown}` },
+        ...["error", "disconnected"].includes(b.phase) ? [{ key: "retry", label: t.reconnect, title: t.reconnectHint }] : []
       ];
       facts = {
-        context: node("meter", {
+        context: node3("meter", {
           role: "omp.composer.context",
           style: "bar",
+          actions: { click: "status.context" },
+          aria: t.context,
           value: b.context && b.context.limit > 0 ? Math.min(1, b.context.used / b.context.limit) : null,
           ...b.context ? { label: `${Math.round(b.context.used / b.context.limit * 100)}%`, total: b.context.limit.toLocaleString(locale) } : {},
           title: `${t.context}: ${b.context ? `${b.context.used.toLocaleString(locale)} / ${b.context.limit.toLocaleString(locale)}` : t.unknown}`
         }, void 0, "context"),
-        model: { spans: [span(`Droid \xB7 ${selected?.label || settings2?.modelId || t.default}`)], title: t.model },
-        extras: node("status", { role: "omp.composer.extras", transparent: true, grow: 1 }, segments.map((item) => node("seg", { spans: [span(item.label)], actions: { click: `status.${item.key}` } }, void 0, item.key)), "extras"),
-        usage: node("text", { role: "omp.composer.usage", text: b.usage ? `${b.usage.input.toLocaleString(locale)} ${t.input} \xB7 ${b.usage.output.toLocaleString(locale)} ${t.output}` : "", title: t.usage, wrap: "none" }, void 0, "usage")
+        model: { spans: [span2(`Droid \xB7 ${selected?.label || settings2?.modelId || t.default}`)], title: t.model },
+        extras: node3(
+          "row",
+          { role: "omp.composer.extras", grow: 1, gap: "xs", align: "center", wrap: true },
+          segments.map((item) => actionButton2(item.label, `status.${item.key}`, { key: item.key, title: item.title })),
+          "extras"
+        ),
+        usage: node3("text", { role: "omp.composer.usage", text: b.usage ? `${b.usage.input.toLocaleString(locale)} ${t.input} \xB7 ${b.usage.output.toLocaleString(locale)} ${t.output}` : "", title: t.usage, wrap: "none" }, void 0, "usage")
       };
     }
     composer.ui.terminal.setTitle(`Droid \xB7 ${b.session?.title || t.untitled}`);
@@ -2460,7 +2751,7 @@ async function run() {
   }
   async function open(id) {
     pendingNew = null;
-    if (busy()) throw new Error(text("\u8BF7\u5148\u505C\u6B62\u5F53\u524D\u4EFB\u52A1\uFF0C\u518D\u5207\u6362\u4F1A\u8BDD\u3002", "Stop the active turn before switching conversations."));
+    if (busy()) throw new Error(text2("\u8BF7\u5148\u505C\u6B62\u5F53\u524D\u4EFB\u52A1\uFF0C\u518D\u5207\u6362\u4F1A\u8BDD\u3002", "Stop the active turn before switching conversations."));
     const previousDraft = composer.editor.getExpandedText();
     composer.editor.setText("");
     const clearedRevision = draftRevision;
@@ -2479,7 +2770,7 @@ async function run() {
       await command(match[1], match[2]);
       return;
     }
-    if (busy() || backend.state.phase !== "idle") throw new Error(text("\u5F53\u524D\u65E0\u6CD5\u53D1\u9001\u3002\u8BF7\u5148\u505C\u6B62\u4EFB\u52A1\u6216\u91CD\u65B0\u8FDE\u63A5\u4F1A\u8BDD\u3002", "Cannot send now. Stop the active work or reconnect the session."));
+    if (busy() || backend.state.phase !== "idle") throw new Error(text2("\u5F53\u524D\u65E0\u6CD5\u53D1\u9001\u3002\u8BF7\u5148\u505C\u6B62\u4EFB\u52A1\u6216\u91CD\u65B0\u8FDE\u63A5\u4F1A\u8BDD\u3002", "Cannot send now. Stop the active work or reconnect the session."));
     submitting = true;
     changed();
     try {
@@ -2498,17 +2789,19 @@ async function run() {
     switch (name) {
       case "sessions":
         return dialogs.sessions();
+      case "context":
+        return dialogs.context();
       case "resume":
         return argument?.trim() ? open(argument.trim()) : dialogs.sessions();
       case "more":
       case "help": {
-        const selected = await dialogs.choose(text("Droid \u4F1A\u8BDD\u64CD\u4F5C", "Droid conversation actions"), commands.filter((item) => item.name !== "help").map((item) => ({ value: item.name, label: `/${item.name}`, description: item.description })));
+        const selected = await dialogs.choose(text2("Droid \u4F1A\u8BDD\u64CD\u4F5C", "Droid conversation actions"), commands.filter((item) => item.name !== "help").map((item) => ({ value: item.name, label: `/${item.name}`, description: item.description })));
         if (selected) await command(selected);
         return;
       }
       case "new": {
         if (busy()) {
-          if (!await dialogs.confirm(text("\u505C\u6B62\u5E76\u65B0\u5EFA\u5BF9\u8BDD\uFF1F", "Stop and start a new conversation?"), text("\u5DF2\u6267\u884C\u7684\u6587\u4EF6\u4FEE\u6539\u4E0D\u4F1A\u81EA\u52A8\u64A4\u9500\u3002", "File changes already made will not be undone."))) return;
+          if (!await dialogs.confirm(text2("\u505C\u6B62\u5E76\u65B0\u5EFA\u5BF9\u8BDD\uFF1F", "Stop and start a new conversation?"), text2("\u5DF2\u6267\u884C\u7684\u6587\u4EF6\u4FEE\u6539\u4E0D\u4F1A\u81EA\u52A8\u64A4\u9500\u3002", "File changes already made will not be undone."))) return;
           const source = backend.state.session?.id;
           await backend.interrupt();
           if (source && backend.state.session?.id === source) pendingNew = source;
@@ -2528,7 +2821,7 @@ async function run() {
         return;
       }
       case "mode": {
-        const value = await dialogs.choose(t.mode, [{ value: "auto", label: "Auto", description: text("\u6267\u884C\u4EFB\u52A1\uFF0C\u4FDD\u7559\u5F53\u524D\u5BA1\u6279\u7B56\u7565\u3002", "Execute with the current approval policy.") }, { value: "spec", label: "Spec", description: text("\u53EA\u8BFB\u5206\u6790\u5E76\u63D0\u51FA\u65B9\u6848\uFF1B\u5207\u6362\u6A21\u5F0F\u4E0D\u4EE3\u8868\u63A5\u53D7\u8BA1\u5212\u3002", "Inspect and propose a plan; switching mode does not accept a plan.") }]);
+        const value = await dialogs.choose(t.mode, [{ value: "auto", label: "Auto", description: text2("\u6267\u884C\u4EFB\u52A1\uFF0C\u4FDD\u7559\u5F53\u524D\u5BA1\u6279\u7B56\u7565\u3002", "Execute with the current approval policy.") }, { value: "spec", label: "Spec", description: text2("\u53EA\u8BFB\u5206\u6790\u5E76\u63D0\u51FA\u65B9\u6848\uFF1B\u5207\u6362\u6A21\u5F0F\u4E0D\u4EE3\u8868\u63A5\u53D7\u8BA1\u5212\u3002", "Inspect and propose a plan; switching mode does not accept a plan.") }]);
         if (value) await backend.updateSettings({ interactionMode: value });
         return;
       }
@@ -2536,7 +2829,7 @@ async function run() {
         const settings2 = backend.state.session?.settings;
         const levels = settings2?.availableAutonomyLevels ?? (settings2?.autonomyLevel ? [settings2.autonomyLevel] : []);
         const value = await dialogs.choose(t.autonomy, levels.map((value2) => ({ value: value2, label: value2 })));
-        if (value && (value === "off" || await dialogs.confirm(t.autonomy, text(`Droid \u5C06\u6309 ${value} \u7EA7\u522B\u81EA\u52A8\u6279\u51C6\u4E4B\u540E\u7684\u64CD\u4F5C\u3002`, `Droid will automatically approve subsequent operations allowed by ${value}.`)))) await backend.updateSettings({ autonomyLevel: value });
+        if (value && (value === "off" || await dialogs.confirm(t.autonomy, text2(`Droid \u5C06\u6309 ${value} \u7EA7\u522B\u81EA\u52A8\u6279\u51C6\u4E4B\u540E\u7684\u64CD\u4F5C\u3002`, `Droid will automatically approve subsequent operations allowed by ${value}.`)))) await backend.updateSettings({ autonomyLevel: value });
         return;
       }
       case "rename": {
@@ -2547,7 +2840,7 @@ async function run() {
       case "fork":
         return backend.fork();
       case "compact": {
-        const value = await dialogs.input(t.compact, argument, text("\u538B\u7F29\u53EF\u80FD\u8C03\u7528\u6A21\u578B\u5E76\u6D88\u8017\u5F53\u524D Droid \u989D\u5EA6\u3002\u53EF\u586B\u5199\u989D\u5916\u8981\u6C42\u3002", "Compaction may call the selected model and use Droid quota. Extra instructions are optional."));
+        const value = await dialogs.input(t.compact, argument, text2("\u538B\u7F29\u53EF\u80FD\u8C03\u7528\u6A21\u578B\u5E76\u6D88\u8017\u5F53\u524D Droid \u989D\u5EA6\u3002\u53EF\u586B\u5199\u989D\u5916\u8981\u6C42\u3002", "Compaction may call the selected model and use Droid quota. Extra instructions are optional."));
         if (value !== void 0) await backend.compact(value || void 0);
         return;
       }
@@ -2581,7 +2874,7 @@ async function run() {
         return;
       }
       case "quit":
-        if ((busy() || composer.editor.getText()) && !await dialogs.confirm(text("\u5173\u95ED\u5BA2\u6237\u7AEF\uFF1F", "Close the client?"), text("\u4F1A\u505C\u6B62\u5F53\u524D\u4EFB\u52A1\uFF0C\u672A\u53D1\u9001\u8349\u7A3F\u4E0D\u4F1A\u4FDD\u5B58\uFF1B\u5386\u53F2\u4F1A\u8BDD\u4FDD\u7559\u3002", "The active turn will stop and unsent drafts will be lost. Saved conversations remain."))) return;
+        if ((busy() || composer.editor.getText()) && !await dialogs.confirm(text2("\u5173\u95ED\u5BA2\u6237\u7AEF\uFF1F", "Close the client?"), text2("\u4F1A\u505C\u6B62\u5F53\u524D\u4EFB\u52A1\uFF0C\u672A\u53D1\u9001\u8349\u7A3F\u4E0D\u4F1A\u4FDD\u5B58\uFF1B\u5386\u53F2\u4F1A\u8BDD\u4FDD\u7559\u3002", "The active turn will stop and unsent drafts will be lost. Saved conversations remain."))) return;
         return shutdown();
     }
   }

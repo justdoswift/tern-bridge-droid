@@ -1,15 +1,15 @@
 import { randomUUID } from 'node:crypto';
 import {
   AutonomyLevel, DroidClient, ProcessTransport, ReasoningEffort, DroidInteractionMode,
-  ToolConfirmationOutcome, listSessions, resolveExecCoreDeps,
+  ToolConfirmationOutcome, ContextBreakdownResultSchema, listSessions, resolveExecCoreDeps,
 } from '@factory/droid-sdk/node';
-import type { BridgeBackend, BackendOptions, BackendState, ModelChoice, PendingApproval, PendingQuestion, QuestionAnswer, RewindPlan, SessionSummary, SettingsPatch, SettingsView } from './contracts.js';
+import type { BridgeBackend, BackendOptions, BackendState, ContextDetails, ModelChoice, PendingApproval, PendingQuestion, QuestionAnswer, RewindPlan, SessionSummary, SettingsPatch, SettingsView } from './contracts.js';
 import { SessionLock, SessionLockError } from './session-lock.js';
 import { Transcript, record } from './transcript.js';
 
 export type BridgeClient = Pick<DroidClient,
   'initializeSession' | 'loadSession' | 'addUserMessage' | 'interruptSession' | 'updateSessionSettings' |
-  'listModels' | 'getContextStats' | 'getRewindInfo' | 'executeRewind' | 'compactSession' | 'forkSession' |
+  'listModels' | 'getContextStats' | 'getContextBreakdown' | 'getRewindInfo' | 'executeRewind' | 'compactSession' | 'forkSession' |
   'renameSession' | 'onNotification' | 'onError' | 'setPermissionHandler' | 'clearPermissionHandler' |
   'setAskUserHandler' | 'clearAskUserHandler' | 'close' | 'isConnected'>;
 export interface BridgeRuntime {
@@ -161,6 +161,21 @@ export class DroidBridge implements BridgeBackend {
       const entries = await this.sdk.listSessions({ cwd: this.options.cwd, fetchOutsideCWD: all });
       return entries.map(entry => ({ id: entry.id, title: entry.title, cwd: entry.cwd, modifiedTime: entry.modifiedTime.toISOString() }));
     } catch (error) { throw this.report(error, 'List sessions'); }
+  }
+
+  async contextDetails(): Promise<ContextDetails> {
+    const scope = this.ready();
+    const revision = scope.revision;
+    try {
+      const response = result(await scope.client.getContextBreakdown());
+      if (this.scope !== scope || scope.revision !== revision) throw new BridgeFailure('The session changed while reading context usage.');
+      const parsed = ContextBreakdownResultSchema.safeParse(response);
+      if (!parsed.success) throw new BridgeFailure('Droid did not return a supported context breakdown. Check the CLI version.');
+      return parsed.data;
+    } catch (error) {
+      // A read-only report failure must not fail or reconnect the conversation.
+      throw failure(error, 'Read context usage');
+    }
   }
 
   async send(text: string, onAccepted: () => void): Promise<void> {
