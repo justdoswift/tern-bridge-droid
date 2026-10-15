@@ -1,0 +1,350 @@
+import { Container, type Component, type TUI } from '@oh-my-pi/pi-tui/tui';
+import { TranscriptContainer } from '@oh-my-pi/pi-tui/chrome/transcript-container';
+import { UserMessageComponent } from '@oh-my-pi/pi-tui/chat/user-message';
+import { ToolExecutionComponent } from '@oh-my-pi/pi-tui/chat/tool-execution';
+import { Markdown, fencedCode } from '@oh-my-pi/pi-tui/components/markdown';
+import { Disclosure } from '@oh-my-pi/pi-tui/components/disclosure';
+import { Image } from '@oh-my-pi/pi-tui/components/image';
+import { Text } from '@oh-my-pi/pi-tui/components/text';
+import { nativeDiff, renderDiff } from '@oh-my-pi/pi-tui/chrome/diff';
+import { describeCodeCell, renderCodeCell } from '@oh-my-pi/pi-tui/render/code-cell';
+import { rootToggleExpanded, type NativeNode, type NativeUiEvent } from '@oh-my-pi/pi-tui/native/node';
+import { ensureThemeSync, getLanguageFromPath, getMarkdownTheme, getThemeEpoch, theme } from '@oh-my-pi/pi-tui/theme';
+import type { BackendState, ChatMessage, MessageBlock } from './contracts.js';
+
+type ToolBlock = Extract<MessageBlock, { kind: 'tool' }>;
+
+/** Keep the original tool's native toggle handler, including its controlled state. */
+class DroidToolCard extends ToolExecutionComponent {
+  expanded = false;
+  override setExpanded(expanded: boolean): void {
+    this.expanded = expanded;
+    super.setExpanded(expanded);
+  }
+}
+
+/** Adapter for omp's original code-cell renderer; no bridge-owned visual layout. */
+class SharedCodeCell implements Component {
+  private expanded = false;
+  private native: NativeNode | undefined;
+  private nativeEpoch = -1;
+  private rows: readonly string[] | undefined;
+  private rowsEpoch = -1;
+  private width = 0;
+  constructor(private source: string, private path?: string) {}
+  update(source: string, path?: string): void {
+    this.source = source;
+    this.path = path;
+    this.invalidate();
+  }
+  setExpanded(expanded: boolean): void {
+    if (this.expanded === expanded) return;
+    this.expanded = expanded;
+    this.invalidate();
+  }
+  handleNativeEvent(event: NativeUiEvent): void {
+    const expanded = rootToggleExpanded(event);
+    if (expanded !== undefined) this.setExpanded(expanded);
+  }
+  describe(): NativeNode {
+    const epoch = getThemeEpoch();
+    if (!this.native || this.nativeEpoch !== epoch) {
+      this.native = describeCodeCell({
+        code: this.source, language: this.path ? getLanguageFromPath(this.path) : undefined,
+        title: this.path, expanded: this.expanded,
+      }, theme);
+      this.nativeEpoch = epoch;
+    }
+    return this.native;
+  }
+  render(width: number): readonly string[] {
+    const epoch = getThemeEpoch();
+    if (!this.rows || this.width !== width || this.rowsEpoch !== epoch) {
+      this.rows = renderCodeCell({
+        code: this.source, language: this.path ? getLanguageFromPath(this.path) : undefined,
+        title: this.path, expanded: this.expanded, width,
+      }, theme);
+      this.width = width;
+      this.rowsEpoch = epoch;
+    }
+    return this.rows;
+  }
+  invalidate(): void {
+    this.native = undefined;
+    this.rows = undefined;
+  }
+}
+
+/** Compact omp diffs use its native diff renderer; other formats stay lossless. */
+class SharedDiff implements Component {
+  private readonly fallback = new Markdown('', 0, 0, getMarkdownTheme());
+  private readonly terminal = new Text('', 0, 0);
+  private compact = false;
+  private native: NativeNode | undefined;
+  private ansiEpoch = -1;
+  constructor(private source: string, private path?: string) { this.update(source, path); }
+  update(source: string, path?: string): void {
+    this.source = source;
+    this.path = path;
+    this.native = undefined;
+    this.ansiEpoch = -1;
+    this.compact = /[+\- ]\s*\d+\|/.test(source) && source.split('\n').every(line =>
+      /^[+\- ]\s*\d+\|/.test(line) || /^\s*(?:…|\.\.\.)?\s*$/.test(line));
+    // Preserve unified headers, hunk coordinates and any unrecognized format verbatim.
+    if (!this.compact) this.fallback.setText(fencedCode('diff', source));
+  }
+  describe(cx: Parameters<Markdown['describe']>[0]): NativeNode {
+    if (!this.compact) return this.fallback.describe(cx);
+    this.native ??= nativeDiff(this.source, { filePath: this.path });
+    return this.native;
+  }
+  render(width: number): readonly string[] {
+    if (!this.compact) return this.fallback.render(width);
+    // Do not pass a filesystem path to ANSI indentation resolution.
+    const epoch = getThemeEpoch();
+    if (this.ansiEpoch !== epoch) {
+      this.terminal.setText(renderDiff(this.source, { theme }));
+      this.ansiEpoch = epoch;
+    }
+    return this.terminal.render(width);
+  }
+  invalidate(): void {
+    this.native = undefined;
+    this.ansiEpoch = -1;
+    this.fallback.invalidate();
+    this.terminal.invalidate();
+  }
+  releaseRenderCaches(): void { this.fallback.releaseRenderCaches(); this.terminal.releaseRenderCaches(); }
+}
+
+function sameBlock(previous: MessageBlock, next: MessageBlock): boolean {
+  if (previous.kind !== next.kind) return false;
+  if (previous.kind === 'tool' && next.kind === 'tool') {
+    return previous.name === next.name && previous.args === next.args && previous.output === next.output &&
+      previous.status === next.status && previous.diff === next.diff;
+  }
+  if (previous.kind === 'image' && next.kind === 'image') return previous.data === next.data && previous.mime === next.mime;
+  return 'text' in previous && 'text' in next && previous.text === next.text && previous.path === next.path;
+}
+
+function toolArgs(source: string): unknown {
+  try { return JSON.parse(source); } catch { return source; }
+}
+
+/** One stable backend block slot, retaining the shared components while it streams. */
+class DroidBlock extends Container {
+  seen = 0;
+  private snapshot: MessageBlock | undefined;
+  private markdown: Markdown | undefined;
+  private thinking: Disclosure | undefined;
+  private code: SharedCodeCell | undefined;
+  private tool: DroidToolCard | undefined;
+  private diff: SharedDiff | undefined;
+  private live = false;
+  private expanded = false;
+  private imageRevision = 0;
+  private currentImageKey: string | undefined;
+  constructor(private readonly ui: TUI, private readonly cwd: string, private readonly role: ChatMessage['role'],
+    private readonly imageKey: string, expanded: boolean) {
+    super();
+    this.expanded = expanded;
+  }
+
+  sync(block: MessageBlock, live: boolean): boolean {
+    const previous = this.snapshot;
+    const changed = !previous || !sameBlock(previous, block);
+    if (!changed && this.live === live) return false;
+    const reconstruct = !previous || previous.kind !== block.kind ||
+      (previous.kind === 'tool' && block.kind === 'tool' &&
+        (previous.name !== block.name || previous.status === 'interrupted' && block.status !== 'interrupted'));
+    if (reconstruct) {
+      // A sealed interrupted card cannot become live again. Preserve its native expansion choice.
+      this.expanded = this.tool?.expanded ?? this.thinking?.expanded ?? this.expanded;
+      if (this.currentImageKey) {
+        this.ui.imageBudget.release(this.currentImageKey);
+        this.currentImageKey = undefined;
+      }
+      this.disposeChildren();
+      this.markdown = undefined;
+      this.thinking = undefined;
+      this.code = undefined;
+      this.tool = undefined;
+      this.diff = undefined;
+    }
+    if (block.kind === 'tool') this.syncTool(block, previous?.kind === 'tool' ? previous : undefined);
+    else if (block.kind === 'image') {
+      if (changed) {
+        this.disposeChildren();
+        if (this.currentImageKey) this.ui.imageBudget.release(this.currentImageKey);
+        this.currentImageKey = `${this.imageKey}:${++this.imageRevision}`;
+        this.addChild(new Image(block.data, block.mime, { fallbackColor: text => theme.fg('dim', text) }, {
+          imageKey: this.currentImageKey, budget: this.ui.imageBudget, requestRender: () => this.ui.requestRender(),
+        }));
+      }
+    } else if (block.kind === 'code') {
+      if (!this.code) { this.code = new SharedCodeCell(block.text, block.path); this.code.setExpanded(this.expanded); this.addChild(this.code); }
+      else if (changed) this.code.update(block.text, block.path);
+    } else if (block.kind === 'diff') {
+      if (!this.diff) { this.diff = new SharedDiff(block.text, block.path); this.addChild(this.diff); }
+      else if (changed) this.diff.update(block.text, block.path);
+    } else if (block.kind === 'thinking') {
+      if (!this.markdown) {
+        this.markdown = new Markdown(block.text, 1, 0, getMarkdownTheme());
+        const body = this.markdown;
+        this.thinking = new Disclosure({ summary: new Text('Thinking', 0, 0), body: () => body, expanded: this.expanded });
+        this.addChild(this.thinking);
+      } else if (changed) this.markdown.setText(block.text);
+      this.markdown.transientRenderCache = live;
+    } else if (this.role === 'user') {
+      // The original user bubble is immutable; only an actually revised block replaces it.
+      if (changed) { this.disposeChildren(); this.addChild(new UserMessageComponent(block.text)); }
+    } else {
+      // AssistantMessageComponent requires unavailable provider/model/usage/timestamp facts.
+      // Its shared content renderer is the truthful standalone path: no synthetic AI message.
+      if (!this.markdown) { this.markdown = new Markdown(block.text, 1, 0, getMarkdownTheme()); this.addChild(this.markdown); }
+      else if (changed) this.markdown.setText(block.text);
+      this.markdown.transientRenderCache = live;
+    }
+    // Backend objects are mutated in place. Retain scalar values, not their object identity.
+    if (changed) this.snapshot = { ...block };
+    this.live = live;
+    return true;
+  }
+
+  private syncTool(block: ToolBlock, previous?: ToolBlock): void {
+    if (!this.tool) {
+      // Droid tool names are not omp built-in implementations. Disable their renderer registry:
+      // in particular never compute edit previews by reading this host's working tree.
+      this.tool = new DroidToolCard(block.name, toolArgs(block.args), { useBuiltInRenderer: false }, undefined,
+        this.ui, this.cwd, block.id);
+      this.tool.setExpanded(this.expanded);
+      this.addChild(this.tool);
+    } else if (block.args !== previous?.args) this.tool.updateArgs(toolArgs(block.args), block.id);
+    if (!previous || previous.output !== block.output || previous.status !== block.status || !this.snapshot ||
+      previous.name !== block.name || previous.status === 'interrupted' && block.status !== 'interrupted') {
+      // Partial frames express running without inventing a start time/elapsed duration.
+      this.tool.updateResult({ content: [{ type: 'text', text: block.output }], isError: block.status === 'error' },
+        block.status === 'running' || block.status === 'interrupted', block.id);
+      if (block.status === 'interrupted') this.tool.seal();
+    }
+    if (block.diff !== undefined) {
+      if (!this.diff) { this.diff = new SharedDiff(block.diff); this.addChild(this.diff); }
+      else if (block.diff !== previous?.diff) this.diff.update(block.diff);
+    } else if (this.diff) { this.removeChild(this.diff); this.diff = undefined; }
+  }
+
+  setExpanded(expanded: boolean): void {
+    this.expanded = expanded;
+    this.tool?.setExpanded(expanded);
+    this.thinking?.setExpanded(expanded);
+    this.code?.setExpanded(expanded);
+  }
+
+  override dispose(): void {
+    if (this.currentImageKey) {
+      this.ui.imageBudget.release(this.currentImageKey);
+      this.currentImageKey = undefined;
+    }
+    super.dispose();
+  }
+}
+
+interface MessageEntry {
+  role: ChatMessage['role'];
+  container: Container;
+  blocks: Map<string, DroidBlock>;
+  seen: number;
+}
+
+/** Genuine omp transcript components, reconciled against Droid's authoritative identities. */
+export class DroidTranscript {
+  readonly container = new TranscriptContainer();
+  private readonly messages = new Map<string, MessageEntry>();
+  private sessionId: string | null | undefined;
+  private generation = 0;
+  private epoch = 0;
+  private expanded = false;
+  private disposed = false;
+
+  constructor(private readonly ui: TUI, private readonly cwd: string) { ensureThemeSync(); }
+
+  sync(state: BackendState): void {
+    if (this.disposed) return;
+    const sessionId = state.session?.id ?? null;
+    if (this.sessionId !== sessionId) {
+      this.clear();
+      this.sessionId = sessionId;
+      this.generation++;
+      this.ui.requestRender();
+    }
+    const epoch = ++this.epoch;
+    let messageIndex = 0;
+    let order: Component[] | undefined;
+    const last = state.messages.at(-1);
+    for (const message of state.messages) {
+      let entry = this.messages.get(message.id);
+      if (entry && entry.role !== message.role) {
+        entry.container.dispose();
+        this.messages.delete(message.id);
+        entry = undefined;
+      }
+      if (!entry) {
+        entry = { role: message.role, container: new Container(), blocks: new Map(), seen: epoch };
+        this.messages.set(message.id, entry);
+      }
+      entry.seen = epoch;
+      const live = state.needsInterrupt && message === last && message.role === 'assistant';
+      let blockIndex = 0;
+      let blockOrder: Component[] | undefined;
+      for (const block of message.blocks) {
+        let component = entry.blocks.get(block.id);
+        if (!component) {
+          component = new DroidBlock(this.ui, state.session?.cwd || this.cwd, message.role,
+            JSON.stringify([this.generation, sessionId, message.id, block.id]), this.expanded);
+          entry.blocks.set(block.id, component);
+        }
+        component.seen = epoch;
+        if (component.sync(block, live)) this.ui.requestComponentRender(component);
+        if (!blockOrder && entry.container.children[blockIndex] !== component) blockOrder = entry.container.children.slice(0, blockIndex);
+        blockOrder?.push(component);
+        blockIndex++;
+      }
+      for (const [id, component] of entry.blocks) {
+        if (component.seen !== epoch) { component.dispose(); entry.blocks.delete(id); }
+      }
+      if (blockOrder || entry.container.children.length !== blockIndex) {
+        entry.container.children = blockOrder ?? entry.container.children.slice(0, blockIndex);
+        this.ui.requestComponentRender(entry.container);
+      }
+      if (!order && this.container.children[messageIndex] !== entry.container) order = this.container.children.slice(0, messageIndex);
+      order?.push(entry.container);
+      messageIndex++;
+    }
+    for (const [id, entry] of this.messages) {
+      if (entry.seen !== epoch) { entry.container.dispose(); this.messages.delete(id); }
+    }
+    if (order || this.container.children.length !== messageIndex) {
+      this.container.children = order ?? this.container.children.slice(0, messageIndex);
+      this.ui.requestRender();
+    }
+  }
+
+  setExpanded(expanded: boolean): void {
+    if (this.disposed) return;
+    this.expanded = expanded;
+    for (const entry of this.messages.values()) for (const component of entry.blocks.values()) component.setExpanded(expanded);
+    this.ui.requestRender();
+  }
+
+  private clear(): void {
+    for (const entry of this.messages.values()) entry.container.dispose();
+    this.messages.clear();
+    this.container.clear();
+  }
+
+  dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    this.clear();
+  }
+}
