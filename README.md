@@ -1,6 +1,6 @@
 # tern-bridge-droid
 
-让 Droid 使用 **omp 原版 UI 组件**在 Tern 中对话：同一个 `Composer` 输入区、用户气泡、工具卡片、会话选择器、审批和 AskUser。插件负责把 Droid 的数据及操作绑定到这些组件，不自行重画聊天页面，不使用 WebView，也不抓取 Droid TUI 字符。
+让 Droid 使用 **omp 原版 UI 组件**在 Tern 中对话：`Composer` 输入区、助手消息、用户气泡、工具卡片、会话选择器、审批和 AskUser。插件负责把 Droid 的数据及操作绑定到这些组件，不自行重画聊天页面，不使用 WebView，也不抓取 Droid TUI 字符。
 
 ## 环境
 
@@ -14,8 +14,10 @@
 
 ## UI 复用边界
 
-- 直接依赖固定版本 `@oh-my-pi/pi-tui`，使用其 `Composer`、`UserMessageComponent`、`ToolExecutionComponent`、`SessionSelectorComponent`、`HookSelectorComponent`、`HookEditorComponent`、`ApprovalDialogComponent` 和 `AskDialogComponent`；不复制或修改上游组件源码。
-- Assistant 的正文、思考、代码、Diff 和图片使用该包的共享 Markdown、Disclosure、代码/Diff 与图片渲染。完整 `AssistantMessageComponent` 要求 Droid 未公开的 Provider/逐消息用量/时间字段，因此不伪造这些字段来套壳，也不显示虚构的费用或思考耗时。
+- 直接依赖固定版本 `@oh-my-pi/pi-tui`，使用其 `Composer`、`AssistantMessageComponent`、`UserMessageComponent`、`ToolExecutionComponent`、`SessionSelectorComponent`、`HookSelectorComponent`、`HookEditorComponent`、`ApprovalDialogComponent` 和 `AskDialogComponent`；不复制或修改上游组件源码。
+- 助手正文、列表、代码、表格、图片与思考区直接由原版 `AssistantMessageComponent` 渲染，不再用零散 Markdown 和 Disclosure 拼装回答。连续内容形成同一个消息段，工具卡片按 Droid 的原始消息顺序穿插；独立代码、Diff 和工具输出仍沿用原版渲染。
+- 流式状态只来自实际增量及块完成事件；定稿、中断与历史恢复不会留下假运行状态。未知的逐消息用量、费用和速度保持缺省，不拿会话累计量冒充单条用量。实时思考只使用原组件观察到的本次展示计时，历史思考不补造耗时；恢复与组件身份绑定 Droid 的真实会话及消息 ID。
+- 运行状态由原版 Composer 的忙碌样式和停止按钮表达，正文不额外插入“处理中 / Working”阶段标签。真实错误和恢复通知保留；不修改 Droid 的回答原文，也不追加格式提示词。
 - 会话选择器仍是原版组件，只省略 Droid 不提供的会话文件大小等元数据。会话列表、模型选项、执行与审批只来自 Droid。
 - 不创建 omp `AgentSession`，不启动 omp 的模型循环，不读取 omp 的账号、模型配置或会话数据库。不是“由 omp 调用一次 Droid 工具”。
 - 插件自己的命令和提示提供中文/English；上游组件内部的英文文案保留原样。这不是 Tern 或 omp 的整套汉化包。

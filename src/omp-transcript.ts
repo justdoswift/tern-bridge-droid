@@ -1,6 +1,7 @@
 import { Container, type Component, type TUI } from '@oh-my-pi/pi-tui/tui';
 import { TranscriptContainer } from '@oh-my-pi/pi-tui/chrome/transcript-container';
 import { UserMessageComponent } from '@oh-my-pi/pi-tui/chat/user-message';
+import { AssistantMessageComponent } from '@oh-my-pi/pi-tui/chat/assistant-message';
 import { ToolExecutionComponent } from '@oh-my-pi/pi-tui/chat/tool-execution';
 import { Markdown, fencedCode } from '@oh-my-pi/pi-tui/components/markdown';
 import { Disclosure } from '@oh-my-pi/pi-tui/components/disclosure';
@@ -131,6 +132,62 @@ function toolArgs(source: string): unknown {
   try { return JSON.parse(source); } catch { return source; }
 }
 
+type OmpAssistantMessage = Parameters<AssistantMessageComponent['updateContent']>[0];
+type AssistantText = Extract<MessageBlock, { text: string }> & { kind: 'text' | 'thinking' };
+type AssistantContent = AssistantText | Extract<MessageBlock, { kind: 'image' }>;
+const UNKNOWN_ASSISTANT_USAGE: Partial<OmpAssistantMessage['usage']> = Object.freeze({});
+
+function isAssistantContent(block: MessageBlock): block is AssistantContent {
+  return block.kind === 'text' || block.kind === 'thinking' || block.kind === 'image';
+}
+
+/** Content-only binding to the original message renderer, never an Agent/provider message. */
+class DroidAssistantMessage extends AssistantMessageComponent {
+  seen = 0;
+  private readonly snapshots: AssistantContent[] = [];
+  private readonly content: OmpAssistantMessage['content'] = [];
+  private readonly view = { role: 'assistant' as const, content: this.content, usage: UNKNOWN_ASSISTANT_USAGE };
+  private live = false;
+
+  constructor(ui: TUI, private readonly persistenceKey: string, expanded: boolean) {
+    super(undefined, false, () => ui.requestRender(), undefined, ui.imageBudget, false, undefined, expanded);
+    // Droid may retract or replace a partial: keep it revisable until the message settles.
+    this.setMidStreamPublication(false);
+  }
+
+  override messagePersistenceKey(): string { return this.persistenceKey; }
+
+  sync(blocks: readonly MessageBlock[], start: number, end: number, live: boolean, finalized: boolean): boolean {
+    const count = end - start;
+    let changed = this.snapshots.length !== count;
+    for (let index = 0; index < count; index++) {
+      // The caller has already bounded this contiguous run to the supported content kinds.
+      const block = blocks[start + index] as AssistantContent;
+      const previous = this.snapshots[index];
+      if (previous && sameBlock(previous, block)) continue;
+      this.snapshots[index] = { ...block };
+      this.content[index] = block.kind === 'image' ? { type: 'image', data: block.data, mimeType: block.mime }
+        : block.kind === 'thinking' ? { type: 'thinking', thinking: block.text }
+        : { type: 'text', text: block.text };
+      changed = true;
+    }
+    this.snapshots.length = count;
+    this.content.length = count;
+    if (!changed && this.live === live && (!finalized || this.isTranscriptBlockFinalized())) return false;
+    this.live = live;
+    // The pinned renderer only needs content and a usage container. Leave all unknown
+    // provider/model/timestamps/counts absent; no zero-cost or synthetic speed claims.
+    this.updateContent(this.view as OmpAssistantMessage, { transient: live });
+    if (finalized && !this.isTranscriptBlockFinalized()) this.markTranscriptBlockFinalized();
+    return true;
+  }
+
+  override setExpanded(expanded: boolean): void {
+    super.setExpanded(expanded);
+    this.setExpandThinkingBlocks(expanded);
+  }
+}
+
 /** One stable backend block slot, retaining the shared components while it streams. */
 class DroidBlock extends Container {
   seen = 0;
@@ -199,8 +256,6 @@ class DroidBlock extends Container {
       // The original user bubble is immutable; only an actually revised block replaces it.
       if (changed) { this.disposeChildren(); this.addChild(new UserMessageComponent(block.text)); }
     } else {
-      // AssistantMessageComponent requires unavailable provider/model/usage/timestamp facts.
-      // Its shared content renderer is the truthful standalone path: no synthetic AI message.
       if (!this.markdown) { this.markdown = new Markdown(block.text, 1, 0, getMarkdownTheme()); this.addChild(this.markdown); }
       else if (changed) this.markdown.setText(block.text);
       this.markdown.transientRenderCache = live;
@@ -252,7 +307,7 @@ class DroidBlock extends Container {
 interface MessageEntry {
   role: ChatMessage['role'];
   container: Container;
-  blocks: Map<string, DroidBlock>;
+  blocks: Map<string, DroidBlock | DroidAssistantMessage>;
   seen: number;
 }
 
@@ -293,18 +348,37 @@ export class DroidTranscript {
         this.messages.set(message.id, entry);
       }
       entry.seen = epoch;
-      const live = state.needsInterrupt && message === last && message.role === 'assistant';
+      const live = state.needsInterrupt && message === last && message.streaming === true;
       let blockIndex = 0;
       let blockOrder: Component[] | undefined;
-      for (const block of message.blocks) {
-        let component = entry.blocks.get(block.id);
-        if (!component) {
-          component = new DroidBlock(this.ui, state.session?.cwd || this.cwd, message.role,
-            JSON.stringify([this.generation, sessionId, message.id, block.id]), this.expanded);
-          entry.blocks.set(block.id, component);
+      for (let sourceIndex = 0; sourceIndex < message.blocks.length;) {
+        const block = message.blocks[sourceIndex]!;
+        const assistant = message.role === 'assistant' && isAssistantContent(block);
+        const key = assistant ? `assistant:${sourceIndex === 0 ? '' : message.blocks[sourceIndex - 1]!.id}` : `block:${block.id}`;
+        let component = entry.blocks.get(key);
+        let changed: boolean;
+        if (assistant) {
+          const start = sourceIndex++;
+          while (sourceIndex < message.blocks.length && isAssistantContent(message.blocks[sourceIndex]!)) sourceIndex++;
+          if (!(component instanceof DroidAssistantMessage)) {
+            component?.dispose();
+            component = new DroidAssistantMessage(this.ui, JSON.stringify([sessionId, message.id, key]), this.expanded);
+            entry.blocks.set(key, component);
+          }
+          changed = component.sync(message.blocks, start, sourceIndex,
+            live && sourceIndex === message.blocks.length, message.streaming === undefined || sourceIndex < message.blocks.length);
+        } else {
+          sourceIndex++;
+          if (!(component instanceof DroidBlock)) {
+            component?.dispose();
+            component = new DroidBlock(this.ui, state.session?.cwd || this.cwd, message.role,
+              JSON.stringify([this.generation, sessionId, message.id, block.id]), this.expanded);
+            entry.blocks.set(key, component);
+          }
+          changed = component.sync(block, live);
         }
         component.seen = epoch;
-        if (component.sync(block, live)) this.ui.requestComponentRender(component);
+        if (changed) this.ui.requestComponentRender(component);
         if (!blockOrder && entry.container.children[blockIndex] !== component) blockOrder = entry.container.children.slice(0, blockIndex);
         blockOrder?.push(component);
         blockIndex++;

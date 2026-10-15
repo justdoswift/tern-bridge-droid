@@ -93,3 +93,30 @@ test('restored orphan tool results retain their real message ID and image result
   transcript.apply({ type: 'create_message', message: owner });
   assert.deepEqual(transcript.messages.find(message => message.id === 'owner')?.blocks[1], { id: 'image-tool:result:0', kind: 'image', data: 'actual-image-data', mime: 'image/png' });
 });
+
+test('restored reasoning is settled, while real deltas transition through block gaps and terminal settlement', () => {
+  const transcript = new Transcript();
+  transcript.hydrate([{ id: 'history', role: 'assistant', content: [{ type: 'thinking', thinking: 'Saved reasoning' }] }]);
+  assert.equal(transcript.messages[0]?.streaming, undefined, 'history must not start a live thinking clock');
+  transcript.apply({ type: 'thinking_text_delta', messageId: 'live', blockIndex: 0, textDelta: 'Visible reasoning' });
+  const message = transcript.messages.at(-1)!;
+  assert.equal(message.streaming, true);
+  transcript.apply({ type: 'thinking_text_complete', messageId: 'live', blockIndex: 0 });
+  assert.equal(message.streaming, false, 'a completed thinking block stops pulsing before prose arrives');
+  transcript.apply({ type: 'assistant_text_delta', messageId: 'live', blockIndex: 1, textDelta: 'Partial answer' });
+  assert.equal(message.streaming, true, 'the next real block resumes streaming on the same message');
+  transcript.finish('interrupted');
+  assert.equal(message.streaming, undefined);
+  assert.deepEqual(message.blocks.map(block => 'text' in block ? block.text : ''), ['Visible reasoning', 'Partial answer']);
+});
+
+test('a persisted final message settles live content and late deltas cannot restart its presentation', () => {
+  const transcript = new Transcript();
+  transcript.apply({ type: 'assistant_text_delta', messageId: 'reply', blockIndex: 0, textDelta: 'Partial' });
+  const message = transcript.messages[0]!;
+  transcript.apply({ type: 'create_message', message: { id: 'reply', role: 'assistant', content: [{ type: 'text', text: 'Final answer' }] } });
+  assert.equal(message.streaming, undefined);
+  transcript.apply({ type: 'assistant_text_delta', messageId: 'reply', blockIndex: 0, textDelta: ' late' });
+  assert.equal(message.streaming, undefined);
+  assert.deepEqual(message.blocks, [{ id: 'reply:0', kind: 'text', text: 'Final answer' }]);
+});

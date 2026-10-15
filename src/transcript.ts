@@ -29,6 +29,7 @@ export class Transcript {
   private readonly tools = new Map<string, ToolState>();
   private readonly finalized = new Set<string>();
   private readonly completedBlocks = new Set<string>();
+  private readonly partials = new Set<ChatMessage>();
 
   hydrate(messages: unknown): void {
     this.messages.length = 0;
@@ -36,6 +37,7 @@ export class Transcript {
     this.tools.clear();
     this.finalized.clear();
     this.completedBlocks.clear();
+    this.partials.clear();
     if (Array.isArray(messages)) for (const message of messages) this.upsert(message);
     // Saved incomplete tools must not look as though this process is executing them.
     this.finish('interrupted');
@@ -46,8 +48,10 @@ export class Transcript {
     if (typeof raw.id !== 'string' || !Array.isArray(raw.content)) return;
     const hidden = raw.visibility === 'llm_only' || raw.isUserVisible === false || raw.hiddenFromUserViews === true;
     const role = raw.role === 'user' || raw.role === 'assistant' ? raw.role : 'system';
-    const message = this.byId.get(raw.id) ?? { id: raw.id, role, blocks: [] };
+    const message: ChatMessage = this.byId.get(raw.id) ?? { id: raw.id, role, blocks: [] };
     message.role = role;
+    this.partials.delete(message);
+    delete message.streaming;
     const blocks: MessageBlock[] = [];
     raw.content.forEach((value: unknown, index: number) => {
       const block = record(value);
@@ -96,6 +100,8 @@ export class Transcript {
         this.byId.set(message.id, message);
         this.messages.push(message);
       }
+      message.streaming = true;
+      this.partials.add(message);
       let block = message.blocks.find(item => item.id === id);
       if (!block) {
         block = { id, kind: event.type === 'thinking_text_delta' ? 'thinking' : 'text', text: '' };
@@ -105,6 +111,9 @@ export class Transcript {
       if (block.kind === 'text' || block.kind === 'thinking') block.text += event.textDelta;
     } else if ((event.type === 'assistant_text_complete' || event.type === 'thinking_text_complete') && typeof event.messageId === 'string') {
       this.completedBlocks.add(`${event.messageId}:${event.blockIndex}`);
+      const message = this.byId.get(event.messageId);
+      if (message && this.partials.has(message) && message.blocks.every(block =>
+        block.kind !== 'text' && block.kind !== 'thinking' || this.completedBlocks.has(block.id))) message.streaming = false;
     } else if (event.type === 'tool_call') {
       const use = record(event.toolUse);
       if (typeof use.id === 'string') {
@@ -131,6 +140,8 @@ export class Transcript {
   }
 
   finish(status: 'done' | 'error' | 'interrupted'): void {
+    for (const message of this.partials) delete message.streaming;
+    this.partials.clear();
     for (const tool of this.tools.values()) {
       if (tool.block.status === 'running') tool.block.status = status;
       if (!tool.owner && tool.resultMessageId) {
@@ -173,6 +184,8 @@ export class Transcript {
 
   private remove(id: string): void {
     const index = this.messages.findIndex(message => message.id === id);
+    const message = this.byId.get(id);
+    if (message) this.partials.delete(message);
     if (index >= 0) this.messages.splice(index, 1);
     this.byId.delete(id);
     this.finalized.add(id);

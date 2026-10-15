@@ -164,11 +164,11 @@ async function run(): Promise<void> {
       banner = error ? new ErrorBannerComponent(error, () => { uiError = null; dismissedBackendError = b.error; changed(); }) : undefined;
     }
     identity.setText(`Droid · ${b.session?.title || t.untitled}`);
-    notice.setText([b.notice, b.phase !== 'idle' ? t[b.phase] : null].filter(Boolean).join('\n'));
+    notice.setText(b.notice ?? '');
     transcript.sync(b);
     const prompt = dialogs.syncPrompts();
     composer.editor.disableSubmit = submitting || ['connecting', 'running', 'approval', 'question', 'stopping'].includes(b.phase) || b.needsInterrupt;
-    composer.setRuntimeChildren([transcript.container, ...(banner ? [banner] : []), ...(b.notice || b.phase !== 'idle' ? [notice] : []), prompt ?? composer.editor]);
+    composer.setRuntimeChildren([transcript.container, ...(banner ? [banner] : []), ...(b.notice ? [notice] : []), prompt ?? composer.editor]);
     if (prompt !== mountedPrompt) {
       mountedPrompt = prompt;
       if (!dialogs.hasOverlay()) composer.ui.setFocus(prompt ?? composer.editor);

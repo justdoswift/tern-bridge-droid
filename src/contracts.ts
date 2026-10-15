@@ -8,6 +8,8 @@ export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant' | 'system';
   blocks: MessageBlock[];
+  /** Display lifecycle only: true during deltas, false between blocks, absent once settled/restored. */
+  streaming?: boolean;
 }
 export interface ModelChoice {
   id: string;

@@ -121,12 +121,14 @@ var Transcript = class {
   tools = /* @__PURE__ */ new Map();
   finalized = /* @__PURE__ */ new Set();
   completedBlocks = /* @__PURE__ */ new Set();
+  partials = /* @__PURE__ */ new Set();
   hydrate(messages) {
     this.messages.length = 0;
     this.byId.clear();
     this.tools.clear();
     this.finalized.clear();
     this.completedBlocks.clear();
+    this.partials.clear();
     if (Array.isArray(messages)) for (const message of messages) this.upsert(message);
     this.finish("interrupted");
   }
@@ -137,6 +139,8 @@ var Transcript = class {
     const role = raw.role === "user" || raw.role === "assistant" ? raw.role : "system";
     const message = this.byId.get(raw.id) ?? { id: raw.id, role, blocks: [] };
     message.role = role;
+    this.partials.delete(message);
+    delete message.streaming;
     const blocks = [];
     raw.content.forEach((value2, index) => {
       const block = record(value2);
@@ -191,6 +195,8 @@ var Transcript = class {
         this.byId.set(message.id, message);
         this.messages.push(message);
       }
+      message.streaming = true;
+      this.partials.add(message);
       let block = message.blocks.find((item) => item.id === id);
       if (!block) {
         block = { id, kind: event.type === "thinking_text_delta" ? "thinking" : "text", text: "" };
@@ -200,6 +206,8 @@ var Transcript = class {
       if (block.kind === "text" || block.kind === "thinking") block.text += event.textDelta;
     } else if ((event.type === "assistant_text_complete" || event.type === "thinking_text_complete") && typeof event.messageId === "string") {
       this.completedBlocks.add(`${event.messageId}:${event.blockIndex}`);
+      const message = this.byId.get(event.messageId);
+      if (message && this.partials.has(message) && message.blocks.every((block) => block.kind !== "text" && block.kind !== "thinking" || this.completedBlocks.has(block.id))) message.streaming = false;
     } else if (event.type === "tool_call") {
       const use = record(event.toolUse);
       if (typeof use.id === "string") {
@@ -228,6 +236,8 @@ var Transcript = class {
     }
   }
   finish(status) {
+    for (const message of this.partials) delete message.streaming;
+    this.partials.clear();
     for (const tool of this.tools.values()) {
       if (tool.block.status === "running") tool.block.status = status;
       if (!tool.owner && tool.resultMessageId) {
@@ -268,7 +278,9 @@ var Transcript = class {
     }
   }
   remove(id) {
-    const index = this.messages.findIndex((message) => message.id === id);
+    const index = this.messages.findIndex((message2) => message2.id === id);
+    const message = this.byId.get(id);
+    if (message) this.partials.delete(message);
     if (index >= 0) this.messages.splice(index, 1);
     this.byId.delete(id);
     this.finalized.add(id);
@@ -1040,6 +1052,7 @@ var DroidBridge = class {
 import { Container } from "@oh-my-pi/pi-tui/tui";
 import { TranscriptContainer } from "@oh-my-pi/pi-tui/chrome/transcript-container";
 import { UserMessageComponent } from "@oh-my-pi/pi-tui/chat/user-message";
+import { AssistantMessageComponent } from "@oh-my-pi/pi-tui/chat/assistant-message";
 import { ToolExecutionComponent } from "@oh-my-pi/pi-tui/chat/tool-execution";
 import { Markdown, fencedCode } from "@oh-my-pi/pi-tui/components/markdown";
 import { Disclosure } from "@oh-my-pi/pi-tui/components/disclosure";
@@ -1173,6 +1186,48 @@ function toolArgs(source) {
     return source;
   }
 }
+var UNKNOWN_ASSISTANT_USAGE = Object.freeze({});
+function isAssistantContent(block) {
+  return block.kind === "text" || block.kind === "thinking" || block.kind === "image";
+}
+var DroidAssistantMessage = class extends AssistantMessageComponent {
+  constructor(ui, persistenceKey, expanded) {
+    super(void 0, false, () => ui.requestRender(), void 0, ui.imageBudget, false, void 0, expanded);
+    this.persistenceKey = persistenceKey;
+    this.setMidStreamPublication(false);
+  }
+  seen = 0;
+  snapshots = [];
+  content = [];
+  view = { role: "assistant", content: this.content, usage: UNKNOWN_ASSISTANT_USAGE };
+  live = false;
+  messagePersistenceKey() {
+    return this.persistenceKey;
+  }
+  sync(blocks, start, end, live, finalized) {
+    const count = end - start;
+    let changed = this.snapshots.length !== count;
+    for (let index = 0; index < count; index++) {
+      const block = blocks[start + index];
+      const previous = this.snapshots[index];
+      if (previous && sameBlock(previous, block)) continue;
+      this.snapshots[index] = { ...block };
+      this.content[index] = block.kind === "image" ? { type: "image", data: block.data, mimeType: block.mime } : block.kind === "thinking" ? { type: "thinking", thinking: block.text } : { type: "text", text: block.text };
+      changed = true;
+    }
+    this.snapshots.length = count;
+    this.content.length = count;
+    if (!changed && this.live === live && (!finalized || this.isTranscriptBlockFinalized())) return false;
+    this.live = live;
+    this.updateContent(this.view, { transient: live });
+    if (finalized && !this.isTranscriptBlockFinalized()) this.markTranscriptBlockFinalized();
+    return true;
+  }
+  setExpanded(expanded) {
+    super.setExpanded(expanded);
+    this.setExpandThinkingBlocks(expanded);
+  }
+};
 var DroidBlock = class extends Container {
   constructor(ui, cwd, role, imageKey, expanded) {
     super();
@@ -1342,23 +1397,47 @@ var DroidTranscript = class {
         this.messages.set(message.id, entry);
       }
       entry.seen = epoch;
-      const live = state.needsInterrupt && message === last && message.role === "assistant";
+      const live = state.needsInterrupt && message === last && message.streaming === true;
       let blockIndex = 0;
       let blockOrder;
-      for (const block of message.blocks) {
-        let component = entry.blocks.get(block.id);
-        if (!component) {
-          component = new DroidBlock(
-            this.ui,
-            state.session?.cwd || this.cwd,
-            message.role,
-            JSON.stringify([this.generation, sessionId, message.id, block.id]),
-            this.expanded
+      for (let sourceIndex = 0; sourceIndex < message.blocks.length; ) {
+        const block = message.blocks[sourceIndex];
+        const assistant = message.role === "assistant" && isAssistantContent(block);
+        const key = assistant ? `assistant:${sourceIndex === 0 ? "" : message.blocks[sourceIndex - 1].id}` : `block:${block.id}`;
+        let component = entry.blocks.get(key);
+        let changed;
+        if (assistant) {
+          const start = sourceIndex++;
+          while (sourceIndex < message.blocks.length && isAssistantContent(message.blocks[sourceIndex])) sourceIndex++;
+          if (!(component instanceof DroidAssistantMessage)) {
+            component?.dispose();
+            component = new DroidAssistantMessage(this.ui, JSON.stringify([sessionId, message.id, key]), this.expanded);
+            entry.blocks.set(key, component);
+          }
+          changed = component.sync(
+            message.blocks,
+            start,
+            sourceIndex,
+            live && sourceIndex === message.blocks.length,
+            message.streaming === void 0 || sourceIndex < message.blocks.length
           );
-          entry.blocks.set(block.id, component);
+        } else {
+          sourceIndex++;
+          if (!(component instanceof DroidBlock)) {
+            component?.dispose();
+            component = new DroidBlock(
+              this.ui,
+              state.session?.cwd || this.cwd,
+              message.role,
+              JSON.stringify([this.generation, sessionId, message.id, block.id]),
+              this.expanded
+            );
+            entry.blocks.set(key, component);
+          }
+          changed = component.sync(block, live);
         }
         component.seen = epoch;
-        if (component.sync(block, live)) this.ui.requestComponentRender(component);
+        if (changed) this.ui.requestComponentRender(component);
         if (!blockOrder && entry.container.children[blockIndex] !== component) blockOrder = entry.container.children.slice(0, blockIndex);
         blockOrder?.push(component);
         blockIndex++;
@@ -1427,16 +1506,8 @@ var en = {
   default: "Default",
   send: "Send",
   stop: "Stop",
-  stopping: "Stopping\u2026",
   draft: "Message Droid",
   draftHint: "Enter to send \xB7 Shift+Enter for a new line",
-  connecting: "Connecting to Droid\u2026",
-  disconnected: "Disconnected",
-  idle: "Ready",
-  running: "Working",
-  approval: "Approval required",
-  question: "Your answer is needed",
-  error: "Error",
   empty: "Start a conversation in this project.",
   context: "Context",
   usage: "Tokens",
@@ -1513,16 +1584,8 @@ var zh = {
   default: "\u9ED8\u8BA4",
   send: "\u53D1\u9001",
   stop: "\u505C\u6B62",
-  stopping: "\u6B63\u5728\u505C\u6B62\u2026",
   draft: "\u7ED9 Droid \u53D1\u6D88\u606F",
   draftHint: "Enter \u53D1\u9001 \xB7 Shift+Enter \u6362\u884C",
-  connecting: "\u6B63\u5728\u8FDE\u63A5 Droid\u2026",
-  disconnected: "\u672A\u8FDE\u63A5",
-  idle: "\u5C31\u7EEA",
-  running: "\u5904\u7406\u4E2D",
-  approval: "\u7B49\u5F85\u6388\u6743",
-  question: "\u7B49\u5F85\u4F60\u7684\u56DE\u7B54",
-  error: "\u51FA\u9519",
   empty: "\u5728\u5F53\u524D\u9879\u76EE\u5F00\u59CB\u5BF9\u8BDD\u3002",
   context: "\u4E0A\u4E0B\u6587",
   usage: "Token",
@@ -2275,11 +2338,11 @@ async function run() {
       }) : void 0;
     }
     identity.setText(`Droid \xB7 ${b.session?.title || t.untitled}`);
-    notice.setText([b.notice, b.phase !== "idle" ? t[b.phase] : null].filter(Boolean).join("\n"));
+    notice.setText(b.notice ?? "");
     transcript.sync(b);
     const prompt = dialogs.syncPrompts();
     composer.editor.disableSubmit = submitting || ["connecting", "running", "approval", "question", "stopping"].includes(b.phase) || b.needsInterrupt;
-    composer.setRuntimeChildren([transcript.container, ...banner ? [banner] : [], ...b.notice || b.phase !== "idle" ? [notice] : [], prompt ?? composer.editor]);
+    composer.setRuntimeChildren([transcript.container, ...banner ? [banner] : [], ...b.notice ? [notice] : [], prompt ?? composer.editor]);
     if (prompt !== mountedPrompt) {
       mountedPrompt = prompt;
       if (!dialogs.hasOverlay()) composer.ui.setFocus(prompt ?? composer.editor);
