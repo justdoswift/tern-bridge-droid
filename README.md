@@ -16,6 +16,7 @@
 
 - 直接依赖固定版本 `@oh-my-pi/pi-tui`，使用其 `Composer`、`AssistantMessageComponent`、`UserMessageComponent`、`ToolExecutionComponent`、`SessionSelectorComponent`、`HookSelectorComponent`、`HookEditorComponent`、`ApprovalDialogComponent` 和 `AskDialogComponent`；不复制或修改上游组件源码。
 - 助手正文、列表、代码、表格、图片与思考区直接由原版 `AssistantMessageComponent` 渲染，不再用零散 Markdown 和 Disclosure 拼装回答。连续内容形成同一个消息段，工具卡片按 Droid 的原始消息顺序穿插；独立代码、Diff 和工具输出仍沿用原版渲染。
+- Read 源码按文件路径标记语言，使用原生代码高亮，不伪造读取区间的起始行号。Grep 的内容结果按已知文件路径、实际行号和匹配/上下文标记，交给原版文件行与编号代码视图；不同语言分别着色。无法确认的内容、截断提示、文件名列表、计数、Execute 日志和错误保留原输出。预览只使用 Droid 已返回的数据，不读取本机文件补内容，也不启用 omp 工具执行器。
 - 流式状态只来自实际增量及块完成事件；定稿、中断与历史恢复不会留下假运行状态。未知的逐消息用量、费用和速度保持缺省，不拿会话累计量冒充单条用量。实时思考只使用原组件观察到的本次展示计时，历史思考不补造耗时；恢复与组件身份绑定 Droid 的真实会话及消息 ID。
 - 运行状态由原版 Composer 的忙碌样式和停止按钮表达，正文不额外插入“处理中 / Working”阶段标签。真实错误和恢复通知保留；不修改 Droid 的回答原文，也不追加格式提示词。
 - 会话选择器仍是原版组件，只省略 Droid 不提供的会话文件大小等元数据。会话列表、模型选项、执行与审批只来自 Droid。

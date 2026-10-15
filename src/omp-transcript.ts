@@ -9,15 +9,55 @@ import { Image } from '@oh-my-pi/pi-tui/components/image';
 import { Text } from '@oh-my-pi/pi-tui/components/text';
 import { nativeDiff, renderDiff } from '@oh-my-pi/pi-tui/chrome/diff';
 import { describeCodeCell, renderCodeCell } from '@oh-my-pi/pi-tui/render/code-cell';
-import { rootToggleExpanded, type NativeNode, type NativeUiEvent } from '@oh-my-pi/pi-tui/native/node';
+import { rootToggleExpanded, type DescribeContext, type NativeNode, type NativeUiEvent } from '@oh-my-pi/pi-tui/native/node';
+import { ansi, code, col, keyed } from '@oh-my-pi/pi-tui/native/describe';
+import { numberedCode } from '@oh-my-pi/pi-tui/tools/grouped-file-output';
+import { fileRow } from '@oh-my-pi/pi-tui/tools/native-view';
 import { ensureThemeSync, getLanguageFromPath, getMarkdownTheme, getThemeEpoch, theme } from '@oh-my-pi/pi-tui/theme';
 import type { BackendState, ChatMessage, MessageBlock } from './contracts.js';
+import { toolSourceParts, type ToolSourcePart } from './tool-source.js';
 
 type ToolBlock = Extract<MessageBlock, { kind: 'tool' }>;
 
-/** Keep the original tool's native toggle handler, including its controlled state. */
+/** Original tool chrome and controls, with display-only source metadata for Droid Read/Grep. */
 class DroidToolCard extends ToolExecutionComponent {
   expanded = false;
+  private sourceArgs: unknown;
+  private sourceOutput: string | undefined;
+  private sourceError = false;
+  private sourceParts: ToolSourcePart[] | undefined;
+  private sourceBody: NativeNode[] | undefined;
+  private projection: { original: NativeNode; node: NativeNode } | undefined;
+
+  setSource(block: ToolBlock, args: unknown): void {
+    const error = block.status === 'error';
+    if (this.sourceArgs === args && this.sourceOutput === block.output && this.sourceError === error) return;
+    this.sourceArgs = args;
+    this.sourceOutput = block.output;
+    this.sourceError = error;
+    this.sourceParts = toolSourceParts(block, args, getLanguageFromPath);
+    this.sourceBody = undefined;
+    this.projection = undefined;
+  }
+
+  override describe(cx?: DescribeContext): NativeNode {
+    const original = super.describe(cx);
+    if (!this.sourceParts || original.k !== 'tool' || !original.c?.length || !cx?.supports('code')) return original;
+    if (this.projection?.original === original) return this.projection.node;
+    const body = this.sourceBody ??= this.sourceParts.flatMap<NativeNode>((part, index) => {
+      if (part.kind === 'read') return [keyed(code(part.text, { lang: part.lang }), 'source')];
+      if (part.kind === 'plain') return [keyed(ansi(part.lines.join('\n')), `notice-${index}`)];
+      return [keyed(col([
+        fileRow(part.path, { key: 'file' }),
+        ...numberedCode(part.lines, { lang: part.lang }),
+      ], { gap: 'xs', role: 'omp.tool.search.file' }), `source-${index}`)];
+    });
+    // Replace only the generic result child. Keep status, collapse, preview and trailing native children.
+    const node: NativeNode = { ...original, c: [...body, ...original.c.slice(1)] };
+    this.projection = { original, node };
+    return node;
+  }
+
   override setExpanded(expanded: boolean): void {
     this.expanded = expanded;
     super.setExpanded(expanded);
@@ -196,6 +236,7 @@ class DroidBlock extends Container {
   private thinking: Disclosure | undefined;
   private code: SharedCodeCell | undefined;
   private tool: DroidToolCard | undefined;
+  private toolInput: unknown;
   private diff: SharedDiff | undefined;
   private live = false;
   private expanded = false;
@@ -267,14 +308,16 @@ class DroidBlock extends Container {
   }
 
   private syncTool(block: ToolBlock, previous?: ToolBlock): void {
+    if (!this.tool || block.args !== previous?.args) this.toolInput = toolArgs(block.args);
     if (!this.tool) {
       // Droid tool names are not omp built-in implementations. Disable their renderer registry:
       // in particular never compute edit previews by reading this host's working tree.
-      this.tool = new DroidToolCard(block.name, toolArgs(block.args), { useBuiltInRenderer: false }, undefined,
+      this.tool = new DroidToolCard(block.name, this.toolInput, { useBuiltInRenderer: false }, undefined,
         this.ui, this.cwd, block.id);
       this.tool.setExpanded(this.expanded);
       this.addChild(this.tool);
-    } else if (block.args !== previous?.args) this.tool.updateArgs(toolArgs(block.args), block.id);
+    } else if (block.args !== previous?.args) this.tool.updateArgs(this.toolInput, block.id);
+    this.tool.setSource(block, this.toolInput);
     if (!previous || previous.output !== block.output || previous.status !== block.status || !this.snapshot ||
       previous.name !== block.name || previous.status === 'interrupted' && block.status !== 'interrupted') {
       // Partial frames express running without inventing a start time/elapsed duration.

@@ -307,19 +307,19 @@ function failure(error, action) {
   if (error instanceof BridgeFailure || error instanceof SessionLockError) return new BridgeFailure(error.message);
   const name = error instanceof Error ? error.name : "";
   const metadata = record(record(error).metadata);
-  const code = record(error).code ?? metadata.code;
-  if (code === "ENOENT" || metadata.message === "executable not found") return new BridgeFailure(`${action}: Droid could not start. Check the executable path and working directory.`);
-  if (code === -32004 || name === "SessionNotFoundError") return new BridgeFailure(`${action}: the saved session was not found. Choose another session.`);
+  const code2 = record(error).code ?? metadata.code;
+  if (code2 === "ENOENT" || metadata.message === "executable not found") return new BridgeFailure(`${action}: Droid could not start. Check the executable path and working directory.`);
+  if (code2 === -32004 || name === "SessionNotFoundError") return new BridgeFailure(`${action}: the saved session was not found. Choose another session.`);
   if (name === "TimeoutError") return new BridgeFailure(`${action}: Droid did not confirm the request in time. Nothing was resubmitted; inspect the session before sending again.`);
   if (name === "ConnectionError" || name === "ProcessExitError") return new BridgeFailure(`${action}: the Droid connection ended. No prompt was replayed. Reopen the saved session after checking Droid CLI login and executable access.`);
-  if (name === "ProtocolError") return new BridgeFailure(`${action}: Droid rejected the request${typeof code === "number" ? ` (code ${code})` : ""}. Check the selected session, model and CLI login.`);
+  if (name === "ProtocolError") return new BridgeFailure(`${action}: Droid rejected the request${typeof code2 === "number" ? ` (code ${code2})` : ""}. Check the selected session, model and CLI login.`);
   return new BridgeFailure(`${action}: Droid could not complete the operation. Check CLI login, executable access and session availability. No request was automatically retried.`);
 }
 function result(response) {
   const envelope = record(response);
   if (envelope.error) {
-    const code = record(envelope.error).code;
-    throw new BridgeFailure(`Droid rejected the request${typeof code === "number" ? ` (code ${code})` : ""}. Check session availability and the current settings.`);
+    const code2 = record(envelope.error).code;
+    throw new BridgeFailure(`Droid rejected the request${typeof code2 === "number" ? ` (code ${code2})` : ""}. Check session availability and the current settings.`);
   }
   if (!envelope.result || typeof envelope.result !== "object") throw new BridgeFailure("Droid returned no confirmed result. Check that the CLI supports the installed SDK.");
   return record(envelope.result);
@@ -1061,9 +1061,89 @@ import { Text } from "@oh-my-pi/pi-tui/components/text";
 import { nativeDiff, renderDiff } from "@oh-my-pi/pi-tui/chrome/diff";
 import { describeCodeCell, renderCodeCell } from "@oh-my-pi/pi-tui/render/code-cell";
 import { rootToggleExpanded } from "@oh-my-pi/pi-tui/native/node";
+import { ansi, code, col, keyed } from "@oh-my-pi/pi-tui/native/describe";
+import { numberedCode } from "@oh-my-pi/pi-tui/tools/grouped-file-output";
+import { fileRow } from "@oh-my-pi/pi-tui/tools/native-view";
 import { ensureThemeSync, getLanguageFromPath, getMarkdownTheme, getThemeEpoch, theme } from "@oh-my-pi/pi-tui/theme";
+
+// src/tool-source.ts
+function toolSourceParts(tool, args, languageForPath) {
+  if (tool.status === "error" || !tool.output) return void 0;
+  const input = record(args);
+  if (tool.name === "Read") {
+    const path = typeof input.file_path === "string" ? input.file_path : void 0;
+    const lang = path ? languageForPath(path) : void 0;
+    return lang ? [{ kind: "read", text: tool.output, lang }] : void 0;
+  }
+  if (tool.name !== "Grep" || input.output_mode !== "content") return void 0;
+  const scope = typeof input.path === "string" ? input.path : void 0;
+  const scopeLang = scope && input.line_numbers === true ? languageForPath(scope) : void 0;
+  const location = /([:-])([1-9]\d*)\1/g;
+  const parts = [];
+  let hasSource = false;
+  for (const line of tool.output.split("\n")) {
+    let source;
+    location.lastIndex = 0;
+    for (let match = location.exec(line); match; match = location.exec(line)) {
+      const path = line.slice(0, match.index);
+      const lang = languageForPath(path);
+      if (!lang) continue;
+      const n = Number(match[2]);
+      if (Number.isSafeInteger(n)) source = { path, lang, line: { n, text: line.slice(match.index + match[0].length), mark: match[1] === ":" } };
+      break;
+    }
+    if (!source && scope && scopeLang) {
+      const match = /^([1-9]\d*)([:-])(.*)$/.exec(line);
+      const n = match ? Number(match[1]) : 0;
+      if (match && Number.isSafeInteger(n)) source = { path: scope, lang: scopeLang, line: { n, text: match[3], mark: match[2] === ":" } };
+    }
+    const previous = parts.at(-1);
+    if (source) {
+      hasSource = true;
+      if (previous?.kind === "matches" && previous.path === source.path && previous.lines.at(-1).n < source.line.n) {
+        previous.lines.push(source.line);
+      } else parts.push({ kind: "matches", path: source.path, lang: source.lang, lines: [source.line] });
+    } else if (previous?.kind === "plain") previous.lines.push(line);
+    else parts.push({ kind: "plain", lines: [line] });
+  }
+  return hasSource ? parts : void 0;
+}
+
+// src/omp-transcript.ts
 var DroidToolCard = class extends ToolExecutionComponent {
   expanded = false;
+  sourceArgs;
+  sourceOutput;
+  sourceError = false;
+  sourceParts;
+  sourceBody;
+  projection;
+  setSource(block, args) {
+    const error = block.status === "error";
+    if (this.sourceArgs === args && this.sourceOutput === block.output && this.sourceError === error) return;
+    this.sourceArgs = args;
+    this.sourceOutput = block.output;
+    this.sourceError = error;
+    this.sourceParts = toolSourceParts(block, args, getLanguageFromPath);
+    this.sourceBody = void 0;
+    this.projection = void 0;
+  }
+  describe(cx) {
+    const original = super.describe(cx);
+    if (!this.sourceParts || original.k !== "tool" || !original.c?.length || !cx?.supports("code")) return original;
+    if (this.projection?.original === original) return this.projection.node;
+    const body = this.sourceBody ??= this.sourceParts.flatMap((part, index) => {
+      if (part.kind === "read") return [keyed(code(part.text, { lang: part.lang }), "source")];
+      if (part.kind === "plain") return [keyed(ansi(part.lines.join("\n")), `notice-${index}`)];
+      return [keyed(col([
+        fileRow(part.path, { key: "file" }),
+        ...numberedCode(part.lines, { lang: part.lang })
+      ], { gap: "xs", role: "omp.tool.search.file" }), `source-${index}`)];
+    });
+    const node2 = { ...original, c: [...body, ...original.c.slice(1)] };
+    this.projection = { original, node: node2 };
+    return node2;
+  }
   setExpanded(expanded) {
     this.expanded = expanded;
     super.setExpanded(expanded);
@@ -1243,6 +1323,7 @@ var DroidBlock = class extends Container {
   thinking;
   code;
   tool;
+  toolInput;
   diff;
   live = false;
   expanded = false;
@@ -1314,10 +1395,11 @@ var DroidBlock = class extends Container {
     return true;
   }
   syncTool(block, previous) {
+    if (!this.tool || block.args !== previous?.args) this.toolInput = toolArgs(block.args);
     if (!this.tool) {
       this.tool = new DroidToolCard(
         block.name,
-        toolArgs(block.args),
+        this.toolInput,
         { useBuiltInRenderer: false },
         void 0,
         this.ui,
@@ -1326,7 +1408,8 @@ var DroidBlock = class extends Container {
       );
       this.tool.setExpanded(this.expanded);
       this.addChild(this.tool);
-    } else if (block.args !== previous?.args) this.tool.updateArgs(toolArgs(block.args), block.id);
+    } else if (block.args !== previous?.args) this.tool.updateArgs(this.toolInput, block.id);
+    this.tool.setSource(block, this.toolInput);
     if (!previous || previous.output !== block.output || previous.status !== block.status || !this.snapshot || previous.name !== block.name || previous.status === "interrupted" && block.status !== "interrupted") {
       this.tool.updateResult(
         { content: [{ type: "text", text: block.output }], isError: block.status === "error" },
@@ -2202,8 +2285,8 @@ async function run() {
   let autocompleteCwd = "";
   const notice = new Text2("");
   const identity = new Text2("Droid");
-  const composer = new Composer({ preferences: { quiet: true, spellingAutocomplete: "off", spellingTypoDetection: false }, exit: (code) => {
-    process.exitCode = code;
+  const composer = new Composer({ preferences: { quiet: true, spellingAutocomplete: "off", spellingTypoDetection: false }, exit: (code2) => {
+    process.exitCode = code2;
     void shutdown();
   } });
   const backend = new DroidBridge({ cwd, dataDir, execPath: values.droid ?? (typeof preferences.droidPath === "string" ? preferences.droidPath : void 0), onChange: changed });
