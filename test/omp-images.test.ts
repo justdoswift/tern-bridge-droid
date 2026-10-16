@@ -135,6 +135,22 @@ test('native image drafts survive submission, rejection, edits and session lifet
       images.dispose();
       await closing;
       assert.equal(editor.pendingImages.length, 0);
+      // /quit closes the bridge synchronously from the real keyboard submission.
+      // Late acknowledgements must not revive that closed editor or read clipboard data.
+      const quitEditor = new CustomEditor(getEditorTheme());
+      let quitSubmission;
+      const quitImages = new DroidImageComposer(quitEditor, {
+        locale: () => 'zh-CN', currentSession: () => 'quitting', cwd: () => dir,
+        onChange() {}, onError: error => { throw error; },
+        onSubmit: draft => { quitSubmission = draft; quitImages.dispose(); },
+      });
+      quitEditor.setText('/quit');
+      quitEditor.handleInput('\r');
+      await Promise.resolve();
+      assert.equal(quitSubmission.text, '/quit');
+      assert.equal(quitEditor.getText(), '');
+      assert.equal(quitImages.accept(quitSubmission), false);
+      assert.equal(await quitImages.pasteClipboard(), false);
     } finally {
       images.dispose();
       await rm(dir, { recursive: true, force: true });

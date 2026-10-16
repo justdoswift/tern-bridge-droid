@@ -61,9 +61,23 @@ tern plugin link ./artifacts/package/tern-bridge-droid
 
 安装包包含入口、客户端、原版 UI 及 Droid SDK 的**生产运行依赖**、使用说明和第三方许可，不需要在安装时联网下载 npm 依赖。必须保留包内的 `dist/node_modules`，它不是开发目录的依赖备份。不要把项目根目录的开发 `node_modules` 复制进 Tern。`dist/client.mjs` 与许可清单保留在源仓库中；平台原生二进制不加入 Git。
 
-卸载已安装的副本使用 `tern plugin remove tern-bridge-droid`；取消开发链接使用 `tern plugin unlink tern-bridge-droid`。两者都不会删除 Droid 的历史会话。退出已打开的客户端后再移除插件。
+卸载已安装的副本使用 `tern plugin remove tern-bridge-droid`；取消开发链接使用 `tern plugin unlink tern-bridge-droid`。两者都不会删除 Droid 的历史会话。退出已打开的客户端后再移除插件，并新开终端窗格，去除旧窗格中的启动函数。
 
 ## 使用
+
+在 Tern **新建本机 zsh 终端窗格**后，直接输入：
+
+```sh
+droid
+```
+
+无参数的交互启动会在**当前窗格**打开本插件，使用当前实际工作目录；不会再开一个标签页，也不会先启动官方 TUI 再强行切换。输入 `/quit` 返回原来的终端。
+
+安装或更新后，先让 Tern 重载插件（重启 Tern 即可），再新开终端窗格。现有 Shell 不注入按键或补写配置。自动入口目前适用于 macOS/Linux 的本机 **zsh**；其他 Shell、远程主机继续使用原来的 CLI，仍可通过下面的命令面板打开支持的本机插件界面。
+
+`droid --version`、`droid exec …` 等所有带参数命令、管道和非交互调用仍交给实际 Droid CLI，不改参数或退出状态。需要官方交互界面时使用 `command droid`；如需按插件配置的 `droidPath` 绕过桥接，可使用 `TERN_DROID_BRIDGE_BYPASS=1 droid`。
+
+入口使用 Tern 的本机 `spawn` hook 和插件自己的 zsh 启动文件，只在该窗格建立函数；不修改全局 `PATH`、`.zshrc`、`.zshenv`、`.bashrc` 或官方可执行文件。原有 `ZDOTDIR` 及启动文件顺序保持不变，已有同名 alias/function 不会被覆盖；若已有自定义 `droid`，请继续使用命令面板，或自行调整该自定义命令。
 
 在 Tern 窗口按 **⌘K** 打开命令面板（macOS 默认键位），搜索 `Droid`，然后选择：
 
@@ -71,7 +85,7 @@ tern plugin link ./artifacts/package/tern-bridge-droid
 - **Droid：恢复历史会话 / Droid: Resume a conversation**
 - **Droid：在右侧分屏打开 / Droid: Open in a right split**
 
-日常启动不使用 `tern ctl palette ...`，也不需要 `tern serve` 或开发控制 socket。插件目前不接管 Shell 中的 `droid` 命令，直接输入仍会启动官方 CLI。
+日常启动不使用 `tern ctl palette ...`，也不需要 `tern serve` 或开发控制 socket。
 
 新建对话使用当前本机窗格的工作目录；恢复会话使用 Droid 已保存的工作目录。恢复会话同时加载历史消息，不只恢复模型上下文。
 
@@ -120,7 +134,7 @@ tern plugin link ./artifacts/package/tern-bridge-droid
 
 本客户端通过官方 SDK 的底层 `ProcessTransport` / `DroidClient` 复用本机 Droid CLI 认证。已实测不需要额外创建 Factory API Key；已有 `FACTORY_API_KEY` 环境变量仍由 Droid 使用。认证错误应在 Droid 官方 CLI 中处理，插件不读取、复制或保存 token 文件。
 
-通过 `/language` 切换插件文案的中文/English。偏好保存在 Tern 插件数据目录 `plugin-data/tern-bridge-droid/preferences.json`，可配置 `locale`、`bunPath`、`droidPath`。找不到可执行文件时，在终端运行 `command -v bun`、`command -v droid`，将得到的绝对路径填入对应字段。旧的 `nodePath` 不再用于启动。命令面板标题会在下次插件重载时采用保存的语言。
+通过 `/language` 切换插件文案的中文/English。偏好保存在 Tern 插件数据目录 `plugin-data/tern-bridge-droid/preferences.json`，可配置 `locale`、`bunPath`、`droidPath`。找不到可执行文件时，在未接管命令的终端运行 `command -v bun`、`command -v droid`，将得到的绝对路径填入对应字段；当前 zsh 中也可用 `whence -p droid` 查找官方可执行文件，不能把插件入口填成 `droidPath`。命令入口的路径配置在新建窗格时读取，修改后需要新开窗格。旧的 `nodePath` 不再用于启动。命令面板标题会在下次插件重载时采用保存的语言。
 
 插件不修改全局 Droid 默认设置，不新增会话数据库，不自动重试模型请求；主动关闭 Droid 传输日志和共享 UI 的 TSP 录制。Droid 自身的保存/云同步设置及 Tern 自身的屏幕快照机制仍适用。关闭窗格会关闭客户端及 Droid 子进程；已保存历史仍可恢复。仅关闭窗口时，进程是否保留由 Tern 守护进程的正常生命周期决定；守护进程重启不承诺自动恢复正在执行的模型任务。
 
@@ -140,4 +154,4 @@ bun dist/client.mjs --cwd . --data-dir ./artifacts/development-data
 
 可选参数：`--session ID`、`--pick-session`、`--locale zh-CN|en-US`、`--droid PATH`。`--help` 不连接 Droid；在非 Tern 终端中启动会明确失败，不生成伪造的回复或降级成假聊天界面。
 
-实现分为 Luau 启动器/标签活动样式、原版 omp UI 的数据/操作绑定、Droid 协议与会话控制、历史消息归一化和跨进程会话锁。行为测试覆盖协议身份、消息合并、审批与取消、回退计划、锁归属、运行步骤及真实原组件的图片草稿生命周期；实际 Tern 检查覆盖原版组件呈现、会话恢复、中文/多行输入、审批、AskUser、图片附件、任务工作栏和错误恢复。协议夹具不证明模型质量；仅一次已授权的真实 Droid 工具调用用于验证端到端连接，之后不重复付费请求。
+实现分为 Luau 启动器/标签活动样式、窗格内 zsh 命令入口、原版 omp UI 的数据/操作绑定、Droid 协议与会话控制、历史消息归一化和跨进程会话锁。行为测试覆盖协议身份、消息合并、审批与取消、回退计划、锁归属、运行步骤及真实原组件的图片草稿与键盘退出生命周期；实际 Tern 检查覆盖原版组件呈现、会话恢复、中文/多行输入、审批、AskUser、图片附件、任务工作栏和错误恢复。命令入口通过隔离安装检查同窗格启动、工作目录、参数/管道透传、官方 CLI 绕过，以及自定义 `ZDOTDIR`、alias/function 的保留。协议夹具不证明模型质量；仅一次已授权的真实 Droid 工具调用用于验证端到端连接，之后不重复付费请求。

@@ -1,0 +1,63 @@
+#!/bin/sh
+set -eu
+
+fail() {
+	if [ "${TERN_DROID_BRIDGE_LOCALE-}" = en-US ]; then
+		printf 'tern-bridge-droid: %s\n' "$2" >&2
+	else
+		printf 'tern-bridge-droid: %s\n' "$1" >&2
+	fi
+	exit "$3"
+}
+
+bridge_dir=${TERN_DROID_BRIDGE_DIR-}
+if [ -z "$bridge_dir" ]; then
+	bridge_dir=$(CDPATH= cd -P "${0%/*}/.." && pwd -P)
+fi
+
+# Resolve executables without invoking the interactive zsh function or evaluating
+# config text. Keep absolute identities stable when a saved session changes cwd.
+resolve_binary() {
+	case "$1" in
+		*/*) binary=$1 ;;
+		*) binary=$(command -v "$1") || return 1 ;;
+	esac
+	[ -f "$binary" ] && [ -x "$binary" ] || return 1
+	case "$binary" in
+		/*) ;;
+		*) binary=$(pwd -P)/$binary ;;
+	esac
+	printf '%s\n' "$binary"
+}
+
+real_droid=$(resolve_binary "${TERN_DROID_BRIDGE_DROID:-droid}") ||
+	fail '找不到官方 Droid CLI。请先安装并登录，或配置 droidPath 后新开终端窗格。' \
+		'Cannot find the Droid CLI. Install and authenticate it, or configure droidPath and open a new terminal pane.' 127
+if [ "$real_droid" -ef "$0" ]; then
+	fail 'droidPath 指向插件入口，请改为官方 Droid CLI 的路径。' \
+		'droidPath points to the bridge entry. Set it to the actual Droid CLI executable.' 126
+fi
+
+# All CLI arguments (including SDK JSON-RPC transport), pipelines and explicit
+# bypasses remain official Droid operations. Only a bare interactive launch is UI.
+bridge=0
+case "${TERM_PROGRAM-}" in
+	[Tt][Ee][Rr][Nn])
+		if [ "$#" -eq 0 ] && [ -t 0 ] && [ -t 1 ] && [ "${TERN_DROID_BRIDGE_BYPASS-}" != 1 ]; then
+			bridge=1
+		fi ;;
+esac
+if [ "$bridge" -eq 0 ]; then
+	exec "$real_droid" "$@"
+fi
+
+[ -f "$bridge_dir/dist/client.mjs" ] ||
+	fail '插件缺少客户端文件，请重新构建并安装插件。' \
+		'The client bundle is missing. Rebuild and reinstall the plugin.' 1
+[ -n "${TERN_DROID_BRIDGE_DATA-}" ] ||
+	fail '缺少插件数据目录，请重新打开 Tern 终端窗格。' \
+		'The plugin data directory is missing. Open a new Tern terminal pane.' 1
+bun=$(resolve_binary "${TERN_DROID_BRIDGE_BUN:-bun}") ||
+	fail '找不到 Bun。请安装 Bun，或配置 bunPath 后新开终端窗格。' \
+		'Cannot find Bun. Install it, or configure bunPath and open a new terminal pane.' 127
+exec "$bun" "$bridge_dir/dist/client.mjs" --cwd . --data-dir "$TERN_DROID_BRIDGE_DATA" --droid "$real_droid"

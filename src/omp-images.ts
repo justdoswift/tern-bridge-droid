@@ -333,7 +333,8 @@ export class DroidImageComposer {
     if (this.editor.onPasteImagePath === this.#pastePath) this.editor.onPasteImagePath = this.#originalPastePath;
     if (this.editor.handleInput === this.#handleInput) this.editor.handleInput = this.#originalHandleInput;
     if (this.editor.handleDraftEdit === this.#handleDraftEdit) this.editor.handleDraftEdit = this.#originalHandleDraftEdit;
-    this.#inputLifetime.disable();
+    // A keyboard submission can dispose us inside run(); Bun 1.3.14 must first unwind it.
+    queueMicrotask(() => this.#inputLifetime.disable());
     this.editor.clearDraft();
   }
 }
