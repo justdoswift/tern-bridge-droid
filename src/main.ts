@@ -3,6 +3,7 @@ import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { Composer } from '@oh-my-pi/pi-tui/prompt/composer';
+import { AttachmentChipsBand } from '@oh-my-pi/pi-tui/prompt/attachment-chips';
 import { CombinedAutocompleteProvider } from '@oh-my-pi/pi-tui/autocomplete';
 import { Text } from '@oh-my-pi/pi-tui/components/text';
 import { ErrorBannerComponent } from '@oh-my-pi/pi-tui/overlays/error-banner';
@@ -86,6 +87,7 @@ async function run(): Promise<void> {
   const dialogs = new DroidDialogs(composer, backend, { locale: () => locale, onError: report, onChange: changed, openSession: id => open(id) });
   composer.setHeaderExtras([identity], []);
   composer.editor.magicKeywordsEnabledOverride = false;
+  composer.editor.attachmentChips = new AttachmentChipsBand(composer.editor, composer.ui.imageBudget, () => composer.ui.requestRender());
   composer.editor.composerState = () => ({ running: busy(), thinking: backend.state.session?.settings.reasoningEffort, title: backend.state.session?.title || undefined });
   composer.editor.composerFacts = {
     describeComposerFacts: () => facts,
@@ -117,7 +119,6 @@ async function run(): Promise<void> {
     { name: 'rename', description: 'Droid: rename conversation' }, { name: 'fork', description: 'Droid: fork conversation' },
     { name: 'compact', description: 'Droid: compact context (may use model quota)' }, { name: 'rewind', description: 'Droid: inspect rewind' },
     { name: 'context', description: 'Droid: context usage breakdown' },
-    { name: 'attach', description: 'Droid: attach a local image' },
     { name: 'retry', description: 'Droid: reconnect without replay' }, { name: 'language', description: 'Bridge: 中文 / English' },
     { name: 'help', description: 'Bridge: conversation actions' }, { name: 'quit', description: 'Bridge: close client' },
   ];
@@ -198,7 +199,6 @@ async function run(): Promise<void> {
         { key: 'sessions', label: t.sessions, title: t.sessions }, { key: 'more', label: t.more, title: t.more },
         { key: 'mode', label: settings?.interactionMode || t.mode, title: `${t.mode}: ${settings?.interactionMode || t.unknown}` },
         { key: 'autonomy', label: settings?.autonomyLevel || t.autonomy, title: `${t.autonomy}: ${settings?.autonomyLevel || t.unknown}` },
-        { key: 'attach', label: t.attachImage, title: t.attachImageHint },
       ];
       facts = {
         context: node('meter', { role: 'omp.composer.context', style: 'bar', actions: { click: 'status.context' }, aria: t.context,
@@ -248,11 +248,6 @@ async function run(): Promise<void> {
     switch (name) {
       case 'sessions': return dialogs.sessions();
       case 'context': return dialogs.context();
-      case 'attach': {
-        const path = argument ?? await dialogs.input(t.attachImage, undefined, t.attachImageHint);
-        if (path?.trim()) await images.addPath(path);
-        return;
-      }
       case 'resume': return argument?.trim() ? open(argument.trim()) : dialogs.sessions();
       case 'more': case 'help': {
         const selected = await dialogs.choose(text('Droid 会话操作', 'Droid conversation actions'), commands.filter(item => item.name !== 'help').map(item => ({ value: item.name, label: `/${item.name}`, description: item.description })));

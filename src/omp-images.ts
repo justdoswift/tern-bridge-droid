@@ -238,10 +238,6 @@ export class DroidImageComposer {
     this.options.onChange();
   }
 
-  addPath(path: string): Promise<void> {
-    return this.#loadPath(path, this.#lifetime());
-  }
-
   async #loadPath(path: string, lifetime: Lifetime): Promise<void> {
     if (!this.#alive(lifetime)) return;
     this.#pendingAttachments++;

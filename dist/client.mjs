@@ -4,6 +4,7 @@ import { homedir as homedir2 } from "node:os";
 import { join as join2, resolve as resolve2 } from "node:path";
 import { parseArgs } from "node:util";
 import { Composer } from "@oh-my-pi/pi-tui/prompt/composer";
+import { AttachmentChipsBand } from "@oh-my-pi/pi-tui/prompt/attachment-chips";
 import { CombinedAutocompleteProvider } from "@oh-my-pi/pi-tui/autocomplete";
 import { Text as Text6 } from "@oh-my-pi/pi-tui/components/text";
 import { ErrorBannerComponent } from "@oh-my-pi/pi-tui/overlays/error-banner";
@@ -1626,14 +1627,12 @@ var en = {
   stop: "Stop",
   draft: "Message Droid",
   draftHint: "Enter to send \xB7 Shift+Enter for a new line",
-  attachImage: "Attach image",
-  attachImageHint: "Paste an image or use /attach PATH (JPEG, PNG, GIF, WebP).",
   imagePathInvalid: "Cannot read this local image. Check the file path and permissions.",
-  imageInvalid: "Choose a valid JPEG, PNG, GIF or WebP image.",
+  imageInvalid: "Paste a valid JPEG, PNG, GIF or WebP image.",
   imageTooLarge: "This image exceeds the 20 MiB attachment limit.",
-  imageClipboardFailed: "Cannot read the clipboard. Paste a local image path or use /attach PATH.",
+  imageClipboardFailed: "Cannot read the clipboard. Copy the image again, then paste it into the message.",
   imageUnsupportedModel: "This Droid model does not support images. Choose an image-capable model or remove the images.",
-  imageEmptyDraft: "Enter a message or attach an image before sending.",
+  imageEmptyDraft: "Enter a message or paste an image before sending.",
   empty: "Start a conversation in this project.",
   context: "Context",
   usage: "Tokens",
@@ -1727,14 +1726,12 @@ var zh = {
   stop: "\u505C\u6B62",
   draft: "\u7ED9 Droid \u53D1\u6D88\u606F",
   draftHint: "Enter \u53D1\u9001 \xB7 Shift+Enter \u6362\u884C",
-  attachImage: "\u6DFB\u52A0\u56FE\u7247",
-  attachImageHint: "\u7C98\u8D34\u56FE\u7247\uFF0C\u6216\u4F7F\u7528 /attach \u8DEF\u5F84\uFF08JPEG\u3001PNG\u3001GIF\u3001WebP\uFF09\u3002",
   imagePathInvalid: "\u65E0\u6CD5\u8BFB\u53D6\u672C\u5730\u56FE\u7247\uFF0C\u8BF7\u68C0\u67E5\u6587\u4EF6\u8DEF\u5F84\u548C\u8BFB\u53D6\u6743\u9650\u3002",
-  imageInvalid: "\u8BF7\u9009\u62E9\u6709\u6548\u7684 JPEG\u3001PNG\u3001GIF \u6216 WebP \u56FE\u7247\u3002",
+  imageInvalid: "\u8BF7\u7C98\u8D34\u6709\u6548\u7684 JPEG\u3001PNG\u3001GIF \u6216 WebP \u56FE\u7247\u3002",
   imageTooLarge: "\u56FE\u7247\u8D85\u8FC7 20 MiB \u9644\u4EF6\u4E0A\u9650\u3002",
-  imageClipboardFailed: "\u65E0\u6CD5\u8BFB\u53D6\u526A\u8D34\u677F\u3002\u8BF7\u7C98\u8D34\u672C\u5730\u56FE\u7247\u8DEF\u5F84\uFF0C\u6216\u4F7F\u7528 /attach \u8DEF\u5F84\u3002",
+  imageClipboardFailed: "\u65E0\u6CD5\u8BFB\u53D6\u526A\u8D34\u677F\uFF0C\u8BF7\u91CD\u65B0\u590D\u5236\u56FE\u7247\u540E\u7C98\u8D34\u5230\u8F93\u5165\u6846\u3002",
   imageUnsupportedModel: "\u5F53\u524D Droid \u6A21\u578B\u4E0D\u652F\u6301\u56FE\u7247\uFF0C\u8BF7\u9009\u62E9\u652F\u6301\u56FE\u7247\u7684\u6A21\u578B\uFF0C\u6216\u79FB\u9664\u56FE\u7247\u540E\u53D1\u9001\u3002",
-  imageEmptyDraft: "\u8BF7\u8F93\u5165\u6D88\u606F\u6216\u6DFB\u52A0\u56FE\u7247\u540E\u518D\u53D1\u9001\u3002",
+  imageEmptyDraft: "\u8BF7\u8F93\u5165\u6D88\u606F\u6216\u7C98\u8D34\u56FE\u7247\u540E\u518D\u53D1\u9001\u3002",
   empty: "\u5728\u5F53\u524D\u9879\u76EE\u5F00\u59CB\u5BF9\u8BDD\u3002",
   context: "\u4E0A\u4E0B\u6587",
   usage: "Token",
@@ -2844,9 +2841,6 @@ var DroidImageComposer = class {
     this.editor.clearDraft();
     this.options.onChange();
   }
-  addPath(path) {
-    return this.#loadPath(path, this.#lifetime());
-  }
   async #loadPath(path, lifetime) {
     if (!this.#alive(lifetime)) return;
     this.#pendingAttachments++;
@@ -3049,6 +3043,7 @@ async function run() {
   const dialogs = new DroidDialogs(composer, backend, { locale: () => locale, onError: report, onChange: changed, openSession: (id) => open2(id) });
   composer.setHeaderExtras([identity], []);
   composer.editor.magicKeywordsEnabledOverride = false;
+  composer.editor.attachmentChips = new AttachmentChipsBand(composer.editor, composer.ui.imageBudget, () => composer.ui.requestRender());
   composer.editor.composerState = () => ({ running: busy(), thinking: backend.state.session?.settings.reasoningEffort, title: backend.state.session?.title || void 0 });
   composer.editor.composerFacts = {
     describeComposerFacts: () => facts,
@@ -3108,7 +3103,6 @@ async function run() {
     { name: "compact", description: "Droid: compact context (may use model quota)" },
     { name: "rewind", description: "Droid: inspect rewind" },
     { name: "context", description: "Droid: context usage breakdown" },
-    { name: "attach", description: "Droid: attach a local image" },
     { name: "retry", description: "Droid: reconnect without replay" },
     { name: "language", description: "Bridge: \u4E2D\u6587 / English" },
     { name: "help", description: "Bridge: conversation actions" },
@@ -3206,8 +3200,7 @@ async function run() {
         { key: "sessions", label: t.sessions, title: t.sessions },
         { key: "more", label: t.more, title: t.more },
         { key: "mode", label: settings2?.interactionMode || t.mode, title: `${t.mode}: ${settings2?.interactionMode || t.unknown}` },
-        { key: "autonomy", label: settings2?.autonomyLevel || t.autonomy, title: `${t.autonomy}: ${settings2?.autonomyLevel || t.unknown}` },
-        { key: "attach", label: t.attachImage, title: t.attachImageHint }
+        { key: "autonomy", label: settings2?.autonomyLevel || t.autonomy, title: `${t.autonomy}: ${settings2?.autonomyLevel || t.unknown}` }
       ];
       facts = {
         context: node4("meter", {
@@ -3277,11 +3270,6 @@ async function run() {
         return dialogs.sessions();
       case "context":
         return dialogs.context();
-      case "attach": {
-        const path = argument ?? await dialogs.input(t.attachImage, void 0, t.attachImageHint);
-        if (path?.trim()) await images.addPath(path);
-        return;
-      }
       case "resume":
         return argument?.trim() ? open2(argument.trim()) : dialogs.sessions();
       case "more":

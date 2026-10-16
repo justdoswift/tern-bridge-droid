@@ -38,7 +38,7 @@ test('native image drafts survive submission, rejection, edits and session lifet
       ];
       for (const [name, bytes, mime] of fixtures) {
         await writeFile(join(dir, name), bytes);
-        await images.addPath(name);
+        await editor.onPasteImagePath(name);
         assert.equal(editor.composerChips().at(-1).image.mimeType, mime);
       }
       assert.equal(errors.length, 0);
@@ -63,7 +63,7 @@ test('native image drafts survive submission, rejection, edits and session lifet
       assert.ok(editor.getText().includes('newer edit'));
       editor.submit();
       const beforeNewImage = submissions.at(-1);
-      await images.addPath('image.png');
+      await editor.onPasteImagePath('image.png');
       assert.equal(images.accept(beforeNewImage), false);
       assert.equal(editor.composerChips().filter(chip => chip.kind === 'image').length, 5);
       // Deleting a chip excludes its bytes, without rewriting the live draft.
@@ -78,13 +78,13 @@ test('native image drafts survive submission, rejection, edits and session lifet
       assert.equal(editor.getText(), '');
       assert.equal(editor.pendingImages.length, 0);
       assert.equal(editor.composerChips().length, 0);
-      await images.addPath('image.png');
+      await editor.onPasteImagePath('image.png');
       editor.submit();
       const imageOnly = submissions.at(-1);
       assert.equal(imageOnly.text, '');
       assert.equal(imageOnly.images.length, 1);
       assert.equal(images.accept(imageOnly), true);
-      await images.addPath('image.png');
+      await editor.onPasteImagePath('image.png');
       editor.pasteText('original session paste\n'.repeat(150));
       const beforeTransition = editor.getText();
       const expandedBeforeTransition = editor.getExpandedText();
@@ -96,7 +96,7 @@ test('native image drafts survive submission, rejection, edits and session lifet
       assert.equal(editor.getExpandedText(), expandedBeforeTransition);
       assert.equal(editor.composerChips().length, 1);
       const successfulOpen = images.beginSessionChange();
-      const freshImage = images.addPath('image.webp');
+      const freshImage = editor.onPasteImagePath('image.webp');
       session = 'opened';
       successfulOpen.complete();
       await freshImage;
@@ -108,7 +108,7 @@ test('native image drafts survive submission, rejection, edits and session lifet
       assert.equal(editor.getText(), 'draft typed during failed connection');
       assert.equal(editor.pendingImages.length, 0);
       images.resetSession();
-      await images.addPath('image.png');
+      await editor.onPasteImagePath('image.png');
       editor.submit();
       const oldSessionDraft = submissions.at(-1);
       const pathsFinished = Promise.withResolvers();
@@ -125,13 +125,13 @@ test('native image drafts survive submission, rejection, edits and session lifet
       editor.onPasteImagePath = pastePath;
       assert.equal(images.accept(oldSessionDraft), false);
       assert.equal(editor.pendingImages.length, 0);
-      await images.addPath('missing.png');
+      await editor.onPasteImagePath('missing.png');
       await writeFile(join(dir, 'invalid.png'), 'not image data');
-      await images.addPath('invalid.png');
-      await images.addPath(dir);
+      await editor.onPasteImagePath('invalid.png');
+      await editor.onPasteImagePath(dir);
       assert.equal(errors.length, 3);
       assert.equal(editor.pendingImages.length, 0);
-      const closing = images.addPath('image.png');
+      const closing = editor.onPasteImagePath('image.png');
       images.dispose();
       await closing;
       assert.equal(editor.pendingImages.length, 0);
