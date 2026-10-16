@@ -25,7 +25,8 @@ export class DroidWorkingHud extends Text {
     this.native = undefined;
     const t = dictionary(locale);
     this.label = !snapshot.active ? '' : snapshot.stage === 'stopping' ? t.stop
-      : snapshot.step ?? (snapshot.stage === 'thinking' ? t.thinking : t.assistant);
+      : snapshot.stage === 'compaction' ? t.workingCompaction
+      : snapshot.step ?? (snapshot.stage === 'thinking' ? t.workingThinking : t.working);
     this.setText(this.label);
   }
 
@@ -33,7 +34,10 @@ export class DroidWorkingHud extends Text {
     if (!this.snapshot.active) return this.todos.hasTasks()
       ? node('row', { role: 'omp.hud', justify: 'end', gap: 'sm' }, [this.todos]) : EMPTY_NODE;
     if (!this.native) {
-      const original = describeWorkingRow({ label: this.label, startedAt: this.snapshot.startedAt }, cx);
+      const original = describeWorkingRow({
+        label: this.label, startedAt: this.snapshot.startedAt,
+        ...(this.snapshot.stage === 'compaction' ? { variant: { kind: 'compaction' } as const } : {}),
+      }, cx);
       const working: NativeNode = original.k === 'row'
         ? { ...original, p: { ...original.p, grow: 1, basis: 'content', min: { w: 0 } } } : original;
       this.native = col([

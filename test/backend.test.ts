@@ -8,6 +8,7 @@ import { DroidBridge, normalizeModels } from '../src/backend.js';
 import type { BridgeClient, BridgeRuntime } from '../src/backend.js';
 import type { InputImage } from '../src/contracts.js';
 import { record } from '../src/transcript.js';
+import { DroidWorkTracker } from '../src/work-state.js';
 
 interface Snapshot {
   session: { title: string; messages: unknown[] };
@@ -724,4 +725,41 @@ test('an in-flight context report cannot survive a same-session settings reload'
   await rejected;
   assert.equal(bridge.state.session?.id, 'original');
   assert.equal(bridge.state.session?.settings.interactionMode, 'auto');
+});
+
+test('working labels follow current-session compaction and thinking, not foreign events or completed-turn state', async t => {
+  const { bridge, client, clients } = await fixture(t, true, client => {
+    client.snapshots.original!.workingState = 'compacting_conversation';
+  });
+  const tracker = new DroidWorkTracker();
+  let work = tracker.sync(bridge.state);
+  assert.ok(work.active);
+  assert.equal(work.stage, 'compaction');
+  client.emit({ type: 'droid_working_state_changed', newState: 'thinking' });
+  work = tracker.sync(bridge.state);
+  assert.ok(work.active);
+  assert.equal(work.stage, 'thinking');
+  client.emit({ type: 'droid_working_state_changed', newState: 'compacting_conversation' }, 'foreign-session');
+  work = tracker.sync(bridge.state);
+  assert.ok(work.active);
+  assert.equal(work.stage, 'thinking');
+  complete(client, 'restored-turn');
+  assert.deepEqual(tracker.sync(bridge.state), { active: false });
+  const send = bridge.send('Next turn', () => undefined);
+  const sent = await client.added.promise;
+  work = tracker.sync(bridge.state);
+  assert.ok(work.active);
+  assert.equal(work.stage, 'response');
+  complete(client, sent.messageId); await send;
+  client.snapshots.original!.workingState = 'compacting_conversation';
+  await bridge.open('original');
+  work = tracker.sync(bridge.state);
+  assert.ok(work.active);
+  assert.equal(work.stage, 'compaction');
+  client.crash();
+  work = tracker.sync(bridge.state);
+  assert.ok(work.active, 'a closed connection cannot stop the replacement session');
+  const current = clients.at(-1); assert.ok(current);
+  current.crash();
+  assert.deepEqual(tracker.sync(bridge.state), { active: false });
 });

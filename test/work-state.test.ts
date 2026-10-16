@@ -5,7 +5,7 @@ import { DroidWorkTracker, isDroidWorking } from '../src/work-state.js';
 
 function state(): BackendState {
   return {
-    phase: 'idle', needsInterrupt: false,
+    phase: 'idle', needsInterrupt: false, workingState: null,
     session: { id: 'first', title: 'Work', cwd: '/project', settings: { modelId: 'selected', reasoningEffort: 'high', interactionMode: 'auto', autonomyLevel: 'low' } },
     messages: [], models: [], approval: null, question: null, error: null, notice: null, context: null, usage: null,
   };
@@ -90,4 +90,46 @@ test('only actually streaming thinking selects the thinking step; restored think
   work = tracker.sync(data, 3);
   assert.ok(work.active);
   assert.equal(work.stage, 'thinking');
+});
+
+test('the current reply replaces a settled tool step without exposing tool output or reasoning', () => {
+  const data = state(); data.phase = 'running';
+  const tool: Extract<MessageBlock, { kind: 'tool' }> = {
+    id: 'tool', kind: 'tool', name: 'Execute', args: JSON.stringify({ summary: 'Inspect configuration' }),
+    output: 'Tool output is not the working label', status: 'running',
+  };
+  const message = { id: 'a', role: 'assistant' as const, blocks: [tool] as MessageBlock[], streaming: true };
+  data.messages = [{ id: 'u', role: 'user', blocks: [{ id: 'u:0', kind: 'text', text: 'Inspect' }] }, message];
+  const tracker = new DroidWorkTracker();
+  const running = tracker.sync(data, 100);
+  assert.ok(running.active);
+  assert.equal(running.step, 'Inspect configuration');
+  tool.status = 'done'; tool.resultReceived = true;
+  const settled = tracker.sync(data, 200);
+  assert.ok(settled.active);
+  assert.equal(settled.stage, 'response');
+  assert.equal(settled.step, undefined);
+  message.blocks.push({ id: 'a:1', kind: 'text', text: '\nNow checking the result.\nAdditional explanation.' });
+  const reply = tracker.sync(data, 300);
+  assert.ok(reply.active);
+  assert.equal(reply.step, 'Now checking the result.');
+  assert.equal(reply.startedAt, 100);
+  message.blocks[1] = { id: 'a:1', kind: 'text', text: 'The result is ready.' };
+  const updated = tracker.sync(data, 400);
+  assert.ok(updated.active);
+  assert.equal(updated.step, 'The result is ready.');
+  message.blocks.push({ id: 'a:2', kind: 'thinking', text: 'Do not use reasoning as a status title' });
+  const thinking = tracker.sync(data, 500);
+  assert.ok(thinking.active);
+  assert.equal(thinking.stage, 'thinking');
+  assert.equal(thinking.step, undefined);
+  data.messages.push({ id: 'next', role: 'user', blocks: [{ id: 'next:0', kind: 'text', text: 'Next task' }] });
+  const next = tracker.sync(data, 600);
+  assert.ok(next.active);
+  assert.equal(next.stage, 'response');
+  assert.equal(next.step, undefined);
+  data.messages = [{ id: 'restored-reply', role: 'assistant', blocks: [{ id: 'restored:0', kind: 'text', text: 'An earlier completed reply' }] }];
+  const beforeAcceptance = tracker.sync(data, 700);
+  assert.ok(beforeAcceptance.active);
+  assert.equal(beforeAcceptance.step, undefined);
 });

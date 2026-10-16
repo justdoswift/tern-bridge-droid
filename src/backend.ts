@@ -143,7 +143,7 @@ interface Turn {
 export class DroidBridge implements BridgeBackend {
   readonly state: BackendState = {
     phase: 'disconnected', session: null, messages: [], models: [], approval: null, question: null,
-    error: null, notice: null, context: null, usage: null, needsInterrupt: false,
+    error: null, notice: null, context: null, usage: null, needsInterrupt: false, workingState: null,
   };
   private scope: Scope | null = null;
   private transcript = new Transcript();
@@ -166,6 +166,7 @@ export class DroidBridge implements BridgeBackend {
       this.state.phase = 'connecting';
       this.state.error = null;
       this.state.notice = null;
+      this.state.workingState = null;
       this.changed();
       await this.connect(sessionId);
     } catch (error) {
@@ -218,6 +219,7 @@ export class DroidBridge implements BridgeBackend {
     this.active = turn;
     this.prepared = null;
     scope.remoteBusy = true;
+    this.state.workingState = null;
     this.state.error = null; this.state.notice = null; this.state.phase = 'running'; this.changed();
     try {
       await Promise.race([
@@ -357,7 +359,7 @@ export class DroidBridge implements BridgeBackend {
     this.cancelTurn(scope, 'The bridge was closed. No prompt was replayed.');
     try { if (scope) await this.dispose(scope); }
     finally {
-      if (!this.scope && !this.operation) { this.state.phase = 'disconnected'; this.state.approval = null; this.state.question = null; this.changed(); }
+      if (!this.scope && !this.operation) { this.state.phase = 'disconnected'; this.state.workingState = null; this.state.approval = null; this.state.question = null; this.changed(); }
     }
   }
 
@@ -416,6 +418,7 @@ export class DroidBridge implements BridgeBackend {
       if (this.scope !== scope || scope.revision !== revision) return;
       const problem = failure(error, 'Droid connection');
       this.state.error = problem.message; this.state.phase = 'error';
+      this.state.workingState = null;
       this.transcript.finish('interrupted'); this.cancelPrompts(scope); this.active?.settle(problem); this.changed();
     }));
     scope.client.setPermissionHandler(event => scope.revision === revision ? this.permission(scope, event) : { selectedOption: ToolConfirmationOutcome.Cancel });
@@ -437,6 +440,7 @@ export class DroidBridge implements BridgeBackend {
     this.state.models = normalizeModels(response.availableModels, this.state.session.settings, this.state.models);
     this.state.context = null; this.state.usage = null;
     this.usage(response.tokenUsage);
+    this.state.workingState = typeof response.workingState === 'string' ? response.workingState : null;
     scope.remoteBusy = typeof response.workingState === 'string'
       ? response.workingState !== 'idle' : response.isAgentLoopInProgress === true;
     this.state.phase = scope.remoteBusy ? 'running' : 'idle';
@@ -500,6 +504,7 @@ export class DroidBridge implements BridgeBackend {
       // A normal Droid error can be followed by a real terminal result. Keep
       // this turn guarded until that result/idle or a transport failure arrives.
     } else if (event.type === 'droid_working_state_changed') {
+      if (typeof event.newState === 'string') this.state.workingState = event.newState;
       if (event.newState === 'idle') {
         scope.remoteBusy = false;
         if (scope.stopping) this.complete(scope, 'cancelled');
@@ -539,6 +544,7 @@ export class DroidBridge implements BridgeBackend {
     this.cancelPrompts(scope);
     scope.stopping = false;
     scope.remoteBusy = false;
+    this.state.workingState = null;
     if (this.active?.scope === scope) scope.terminalIds.add(this.active.messageId);
     scope.unansweredSnapshots.clear();
     if (this.state.error === PENDING_SNAPSHOT_NOTICE) this.state.error = null;

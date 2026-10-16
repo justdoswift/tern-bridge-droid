@@ -7,7 +7,8 @@ import { AttachmentChipsBand } from '@oh-my-pi/pi-tui/prompt/attachment-chips';
 import { CombinedAutocompleteProvider } from '@oh-my-pi/pi-tui/autocomplete';
 import { Text } from '@oh-my-pi/pi-tui/components/text';
 import { ErrorBannerComponent } from '@oh-my-pi/pi-tui/overlays/error-banner';
-import { node, span } from '@oh-my-pi/pi-tui/native/describe';
+import { EMPTY_NODE, node, span } from '@oh-my-pi/pi-tui/native/describe';
+import { TSP_PREFIX } from '@oh-my-pi/pi-tui/native/encode';
 import { actionButton } from '@oh-my-pi/pi-tui/native/overlay';
 import { onNativeRenderingChange } from '@oh-my-pi/pi-tui/native/state';
 import { stopSharedSpinnerTicker } from '@oh-my-pi/pi-tui/chat/tool-execution';
@@ -113,6 +114,7 @@ async function run(): Promise<void> {
   composer.editor.setCustomKeyHandler('ctrl+alt+shift+n', () => { void perform(() => command('new')); });
   composer.editor.setCustomKeyHandler('ctrl+o', () => { expanded = !expanded; transcript.setExpanded(expanded); changed(); });
   const commands = [
+    { name: 'sessions', get description() { return dictionary(locale).sessions; } },
     { name: 'new', description: 'Droid: new conversation' }, { name: 'resume', description: 'Droid: saved conversations' },
     { name: 'model', description: 'Droid: select model' }, { name: 'reasoning', description: 'Droid: reasoning effort' },
     { name: 'mode', description: 'Droid: Auto / Spec' }, { name: 'autonomy', description: 'Droid: approval policy' },
@@ -122,7 +124,13 @@ async function run(): Promise<void> {
     { name: 'retry', description: 'Droid: reconnect without replay' }, { name: 'language', description: 'Bridge: 中文 / English' },
     { name: 'help', description: 'Bridge: conversation actions' }, { name: 'quit', description: 'Bridge: close client' },
   ];
-  const nativeChange = onNativeRenderingChange(on => { if (on) composer.ui.terminal.setTitle('Droid'); });
+  const nativeChange = onNativeRenderingChange(on => {
+    if (on) {
+      composer.ui.terminal.setTitle('Droid');
+      // Tern adds the directory chip; this stylesheet affects only this native surface.
+      composer.ui.terminal.write(`${TSP_PREFIX}s;{"name":"droid-composer","css":".sf-place{display:none}"}\x1b\\`);
+    }
+  });
 
   function busy(): boolean {
     return submitting || backend.state.needsInterrupt || ['connecting', 'running', 'approval', 'question', 'stopping'].includes(backend.state.phase);
@@ -190,25 +198,32 @@ async function run(): Promise<void> {
     }
     const settings = b.session?.settings;
     const selected = b.models.find(model => model.id === settings?.modelId);
-    const key = JSON.stringify([locale, b.phase, b.context, b.usage, b.session?.title, selected?.label, settings]);
+    const key = JSON.stringify([locale, b.phase, b.context, b.session?.title, selected?.label, settings]);
     if (key !== factsKey) {
       factsKey = key;
-      // Keep recovery reachable when native width compression hides optional extras.
-      const segments = ['error', 'disconnected'].includes(b.phase)
-        ? [{ key: 'retry', label: t.reconnect, title: t.reconnectHint }] : [
-        { key: 'sessions', label: t.sessions, title: t.sessions }, { key: 'more', label: t.more, title: t.more },
-        { key: 'mode', label: settings?.interactionMode || t.mode, title: `${t.mode}: ${settings?.interactionMode || t.unknown}` },
-        { key: 'autonomy', label: settings?.autonomyLevel || t.autonomy, title: `${t.autonomy}: ${settings?.autonomyLevel || t.unknown}` },
-      ];
+      const mode = settings?.interactionMode === 'auto' ? 'Auto' : settings?.interactionMode === 'spec' ? 'Spec'
+        : settings?.interactionMode || t.mode;
+      const autonomy = settings?.autonomyLevel;
+      const autonomyLabel = autonomy === 'off' ? t.autonomyOff : autonomy === 'low' ? t.autonomyLow
+        : autonomy === 'medium' ? t.autonomyMedium : autonomy === 'high' ? t.autonomyHigh : autonomy || t.unknown;
+      const autonomyTitle = `${t.autonomy}: ${autonomyLabel}`;
+      // Keep recovery reachable when native width compression hides optional controls.
+      const controls = ['error', 'disconnected'].includes(b.phase)
+        ? [actionButton(t.reconnect, 'status.retry', { key: 'retry', title: t.reconnectHint })] : [
+          actionButton(mode, 'status.mode', { key: 'mode', title: `${t.mode}: ${mode}` }),
+          node('row', {
+            role: 'omp.btn', gap: 'xs', align: 'center', aria: autonomyTitle, title: autonomyTitle,
+            actions: { click: 'status.autonomy' },
+          }, [node('effort', { level: autonomy ?? '', aria: autonomyTitle }, undefined, 'level')], 'autonomy'),
+        ];
       facts = {
         context: node('meter', { role: 'omp.composer.context', style: 'bar', actions: { click: 'status.context' }, aria: t.context,
           value: b.context && b.context.limit > 0 ? Math.min(1, b.context.used / b.context.limit) : null,
           ...(b.context && b.context.limit > 0 ? { label: `${Math.round(b.context.used / b.context.limit * 100)}%` } : {}),
           title: `${t.context}: ${b.context ? `${b.context.used.toLocaleString(locale)} / ${b.context.limit.toLocaleString(locale)}` : t.unknown}` }, undefined, 'context'),
         model: { spans: [span(`Droid · ${selected?.label || settings?.modelId || t.default}`)], title: t.model },
-        extras: node('row', { role: 'omp.composer.extras', grow: 1, gap: 'xs', align: 'center', wrap: true },
-          segments.map(item => actionButton(item.label, `status.${item.key}`, { key: item.key, title: item.title })), 'extras'),
-        usage: node('text', { role: 'omp.composer.usage', text: b.usage ? `${b.usage.input.toLocaleString(locale)} ${t.input} · ${b.usage.output.toLocaleString(locale)} ${t.output}` : '', title: t.usage, wrap: 'none' }, undefined, 'usage'),
+        extras: node('row', { role: 'omp.composer.extras', grow: 1, gap: 'xs', align: 'center' }, controls, 'extras'),
+        usage: EMPTY_NODE,
       };
     }
     composer.ui.terminal.setTitle(`Droid · ${b.session?.title || t.untitled}`);
@@ -249,7 +264,7 @@ async function run(): Promise<void> {
       case 'sessions': return dialogs.sessions();
       case 'context': return dialogs.context();
       case 'resume': return argument?.trim() ? open(argument.trim()) : dialogs.sessions();
-      case 'more': case 'help': {
+      case 'help': {
         const selected = await dialogs.choose(text('Droid 会话操作', 'Droid conversation actions'), commands.filter(item => item.name !== 'help').map(item => ({ value: item.name, label: `/${item.name}`, description: item.description })));
         if (selected) await command(selected);
         return;

@@ -5,7 +5,7 @@ type ToolBlock = Extract<MessageBlock, { kind: 'tool' }>;
 export type WorkSnapshot = { readonly active: false } | {
   readonly active: true;
   readonly startedAt: number;
-  readonly stage: 'tool' | 'thinking' | 'response' | 'stopping';
+  readonly stage: 'tool' | 'thinking' | 'response' | 'compaction' | 'stopping';
   readonly step?: string;
 };
 const IDLE: WorkSnapshot = Object.freeze({ active: false });
@@ -14,14 +14,14 @@ export function isDroidWorking(state: Pick<BackendState, 'session' | 'phase'>): 
   return state.session !== null && (state.phase === 'running' || state.phase === 'stopping');
 }
 
-/** A local observation clock and real tool intent, never reconstructed historical execution time. */
+/** Observe current tools and visible replies, never hidden reasoning or historical execution time. */
 export class DroidWorkTracker {
   private sessionId: string | null | undefined;
   private startedAt: number | undefined;
   private lastTool?: ToolBlock;
   private lastArgs?: string;
   private lastName?: string;
-  private step?: string;
+  private toolStep?: string;
   private snapshot: WorkSnapshot = IDLE;
 
   sync(state: BackendState, now = Date.now()): WorkSnapshot {
@@ -32,17 +32,23 @@ export class DroidWorkTracker {
       this.lastTool = undefined;
       this.lastArgs = undefined;
       this.lastName = undefined;
-      this.step = undefined;
+      this.toolStep = undefined;
     }
     if (!isDroidWorking(state)) return this.snapshot = IDLE;
     this.startedAt ??= now;
     let tool: ToolBlock | undefined;
+    let latest: MessageBlock | undefined;
     let thinking = false;
+    let liveReply = false;
     for (let m = state.messages.length - 1; m >= 0; m--) {
       const message = state.messages[m]!;
       if (message.role === 'user') break;
       if (message.role !== 'assistant') continue;
-      if (message.streaming === true && message.blocks.at(-1)?.kind === 'thinking') thinking = true;
+      if (!latest) {
+        latest = message.blocks.at(-1);
+        thinking = message.streaming === true && latest?.kind === 'thinking';
+        liveReply = message.streaming !== undefined && latest?.kind === 'text';
+      }
       for (let b = message.blocks.length - 1; b >= 0; b--) {
         const block = message.blocks[b]!;
         if (block.kind === 'tool' && block.status === 'running' && !block.resultReceived) { tool = block; break; }
@@ -55,11 +61,15 @@ export class DroidWorkTracker {
       this.lastName = tool.name;
       let summary: unknown;
       try { summary = record(JSON.parse(tool.args)).summary; } catch { /* Partial arguments keep the real tool name. */ }
-      this.step = typeof summary === 'string' && summary.trim() ? summary : tool.name;
+      this.toolStep = typeof summary === 'string' && summary.trim() ? summary : tool.name;
     }
-    const stage = state.phase === 'stopping' ? 'stopping' : this.step ? 'tool' : thinking ? 'thinking' : 'response';
+    const stage = state.phase === 'stopping' ? 'stopping' : state.workingState === 'compacting_conversation' ? 'compaction'
+      : tool ? 'tool' : thinking || state.workingState === 'thinking' ? 'thinking' : 'response';
+    // A settled tool is no longer the current step; use only the latest visible reply.
+    const step = stage === 'tool' ? this.toolStep
+      : stage === 'response' && liveReply && latest?.kind === 'text' ? latest.text.trim().split(/\r?\n/, 1)[0] || undefined : undefined;
     const previous = this.snapshot;
-    if (previous.active && previous.startedAt === this.startedAt && previous.stage === stage && previous.step === this.step) return previous;
-    return this.snapshot = { active: true, startedAt: this.startedAt, stage, ...(this.step ? { step: this.step } : {}) };
+    if (previous.active && previous.startedAt === this.startedAt && previous.stage === stage && previous.step === step) return previous;
+    return this.snapshot = { active: true, startedAt: this.startedAt, stage, ...(step ? { step } : {}) };
   }
 }

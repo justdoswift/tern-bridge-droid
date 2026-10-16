@@ -8,7 +8,8 @@ import { AttachmentChipsBand } from "@oh-my-pi/pi-tui/prompt/attachment-chips";
 import { CombinedAutocompleteProvider } from "@oh-my-pi/pi-tui/autocomplete";
 import { Text as Text6 } from "@oh-my-pi/pi-tui/components/text";
 import { ErrorBannerComponent } from "@oh-my-pi/pi-tui/overlays/error-banner";
-import { node as node4, span as span2 } from "@oh-my-pi/pi-tui/native/describe";
+import { EMPTY_NODE as EMPTY_NODE3, node as node4, span as span2 } from "@oh-my-pi/pi-tui/native/describe";
+import { TSP_PREFIX } from "@oh-my-pi/pi-tui/native/encode";
 import { actionButton as actionButton2 } from "@oh-my-pi/pi-tui/native/overlay";
 import { onNativeRenderingChange } from "@oh-my-pi/pi-tui/native/state";
 import { stopSharedSpinnerTicker } from "@oh-my-pi/pi-tui/chat/tool-execution";
@@ -385,7 +386,8 @@ var DroidBridge = class {
     notice: null,
     context: null,
     usage: null,
-    needsInterrupt: false
+    needsInterrupt: false,
+    workingState: null
   };
   scope = null;
   transcript = new Transcript();
@@ -405,6 +407,7 @@ var DroidBridge = class {
       this.state.phase = "connecting";
       this.state.error = null;
       this.state.notice = null;
+      this.state.workingState = null;
       this.changed();
       await this.connect(sessionId);
     } catch (error) {
@@ -468,6 +471,7 @@ var DroidBridge = class {
     this.active = turn;
     this.prepared = null;
     scope.remoteBusy = true;
+    this.state.workingState = null;
     this.state.error = null;
     this.state.notice = null;
     this.state.phase = "running";
@@ -636,6 +640,7 @@ var DroidBridge = class {
     } finally {
       if (!this.scope && !this.operation) {
         this.state.phase = "disconnected";
+        this.state.workingState = null;
         this.state.approval = null;
         this.state.question = null;
         this.changed();
@@ -719,6 +724,7 @@ var DroidBridge = class {
       const problem = failure(error, "Droid connection");
       this.state.error = problem.message;
       this.state.phase = "error";
+      this.state.workingState = null;
       this.transcript.finish("interrupted");
       this.cancelPrompts(scope);
       this.active?.settle(problem);
@@ -743,6 +749,7 @@ var DroidBridge = class {
     this.state.context = null;
     this.state.usage = null;
     this.usage(response.tokenUsage);
+    this.state.workingState = typeof response.workingState === "string" ? response.workingState : null;
     scope.remoteBusy = typeof response.workingState === "string" ? response.workingState !== "idle" : response.isAgentLoopInProgress === true;
     this.state.phase = scope.remoteBusy ? "running" : "idle";
     if (response.hasOlderMessages === true) this.state.notice = "Droid returned a partial transcript despite loadAllMessages. The CLI must provide full history before it can all be displayed.";
@@ -807,6 +814,7 @@ var DroidBridge = class {
       this.state.error = failure({ name: event.errorType }, "Droid turn").message;
       this.state.notice = this.state.error;
     } else if (event.type === "droid_working_state_changed") {
+      if (typeof event.newState === "string") this.state.workingState = event.newState;
       if (event.newState === "idle") {
         scope.remoteBusy = false;
         if (scope.stopping) this.complete(scope, "cancelled");
@@ -848,6 +856,7 @@ var DroidBridge = class {
     this.cancelPrompts(scope);
     scope.stopping = false;
     scope.remoteBusy = false;
+    this.state.workingState = null;
     if (this.active?.scope === scope) scope.terminalIds.add(this.active.messageId);
     scope.unansweredSnapshots.clear();
     if (this.state.error === PENDING_SNAPSHOT_NOTICE) this.state.error = null;
@@ -1617,12 +1626,15 @@ var en = {
   untitled: "Untitled session",
   newSession: "New",
   sessions: "Sessions",
-  more: "More",
   model: "Model",
   reasoning: "Reasoning",
   mode: "Mode",
   autonomy: "Autonomy",
   default: "Default",
+  autonomyOff: "Off",
+  autonomyLow: "Low",
+  autonomyMedium: "Medium",
+  autonomyHigh: "High",
   send: "Send",
   stop: "Stop",
   draft: "Message Droid",
@@ -1635,9 +1647,6 @@ var en = {
   imageEmptyDraft: "Enter a message or paste an image before sending.",
   empty: "Start a conversation in this project.",
   context: "Context",
-  usage: "Tokens",
-  input: "in",
-  output: "out",
   contextLoading: "Loading context usage\u2026",
   contextFailed: "Context usage is unavailable. Check the Droid CLI version and connection, then retry.",
   contextUnavailable: "Droid has not reported a context budget for this session.",
@@ -1653,6 +1662,9 @@ var en = {
   contextMessages: "Messages",
   retry: "Retry",
   tasks: "Tasks",
+  working: "Working\u2026",
+  workingThinking: "Thinking\u2026",
+  workingCompaction: "Compacting context\u2026",
   thinking: "Thinking",
   user: "You",
   assistant: "Droid",
@@ -1716,12 +1728,15 @@ var zh = {
   untitled: "\u672A\u547D\u540D\u4F1A\u8BDD",
   newSession: "\u65B0\u5EFA",
   sessions: "\u4F1A\u8BDD",
-  more: "\u66F4\u591A",
   model: "\u6A21\u578B",
   reasoning: "\u601D\u8003\u5F3A\u5EA6",
   mode: "\u6A21\u5F0F",
   autonomy: "\u81EA\u4E3B\u6743\u9650",
   default: "\u9ED8\u8BA4",
+  autonomyOff: "\u5173\u95ED",
+  autonomyLow: "\u4F4E",
+  autonomyMedium: "\u4E2D",
+  autonomyHigh: "\u9AD8",
   send: "\u53D1\u9001",
   stop: "\u505C\u6B62",
   draft: "\u7ED9 Droid \u53D1\u6D88\u606F",
@@ -1734,9 +1749,6 @@ var zh = {
   imageEmptyDraft: "\u8BF7\u8F93\u5165\u6D88\u606F\u6216\u7C98\u8D34\u56FE\u7247\u540E\u518D\u53D1\u9001\u3002",
   empty: "\u5728\u5F53\u524D\u9879\u76EE\u5F00\u59CB\u5BF9\u8BDD\u3002",
   context: "\u4E0A\u4E0B\u6587",
-  usage: "Token",
-  input: "\u8F93\u5165",
-  output: "\u8F93\u51FA",
   contextLoading: "\u6B63\u5728\u8BFB\u53D6\u4E0A\u4E0B\u6587\u7528\u91CF\u2026",
   contextFailed: "\u6682\u65F6\u65E0\u6CD5\u8BFB\u53D6\u4E0A\u4E0B\u6587\u7528\u91CF\u3002\u8BF7\u68C0\u67E5 Droid CLI \u7248\u672C\u548C\u8FDE\u63A5\u540E\u91CD\u8BD5\u3002",
   contextUnavailable: "Droid \u5C1A\u672A\u63D0\u4F9B\u6B64\u4F1A\u8BDD\u7684\u4E0A\u4E0B\u6587\u5BB9\u91CF\u3002",
@@ -1752,6 +1764,9 @@ var zh = {
   contextMessages: "\u4F1A\u8BDD\u6D88\u606F",
   retry: "\u91CD\u8BD5",
   tasks: "\u4EFB\u52A1",
+  working: "\u6B63\u5728\u5904\u7406\u2026",
+  workingThinking: "\u601D\u8003\u4E2D\u2026",
+  workingCompaction: "\u6B63\u5728\u538B\u7F29\u4E0A\u4E0B\u6587\u2026",
   thinking: "\u601D\u8003\u8FC7\u7A0B",
   user: "\u4F60",
   assistant: "Droid",
@@ -2562,7 +2577,7 @@ var DroidWorkTracker = class {
   lastTool;
   lastArgs;
   lastName;
-  step;
+  toolStep;
   snapshot = IDLE;
   sync(state, now = Date.now()) {
     const sessionId = state.session?.id ?? null;
@@ -2572,17 +2587,23 @@ var DroidWorkTracker = class {
       this.lastTool = void 0;
       this.lastArgs = void 0;
       this.lastName = void 0;
-      this.step = void 0;
+      this.toolStep = void 0;
     }
     if (!isDroidWorking(state)) return this.snapshot = IDLE;
     this.startedAt ??= now;
     let tool;
+    let latest;
     let thinking = false;
+    let liveReply = false;
     for (let m = state.messages.length - 1; m >= 0; m--) {
       const message = state.messages[m];
       if (message.role === "user") break;
       if (message.role !== "assistant") continue;
-      if (message.streaming === true && message.blocks.at(-1)?.kind === "thinking") thinking = true;
+      if (!latest) {
+        latest = message.blocks.at(-1);
+        thinking = message.streaming === true && latest?.kind === "thinking";
+        liveReply = message.streaming !== void 0 && latest?.kind === "text";
+      }
       for (let b = message.blocks.length - 1; b >= 0; b--) {
         const block = message.blocks[b];
         if (block.kind === "tool" && block.status === "running" && !block.resultReceived) {
@@ -2601,12 +2622,13 @@ var DroidWorkTracker = class {
         summary = record(JSON.parse(tool.args)).summary;
       } catch {
       }
-      this.step = typeof summary === "string" && summary.trim() ? summary : tool.name;
+      this.toolStep = typeof summary === "string" && summary.trim() ? summary : tool.name;
     }
-    const stage = state.phase === "stopping" ? "stopping" : this.step ? "tool" : thinking ? "thinking" : "response";
+    const stage = state.phase === "stopping" ? "stopping" : state.workingState === "compacting_conversation" ? "compaction" : tool ? "tool" : thinking || state.workingState === "thinking" ? "thinking" : "response";
+    const step = stage === "tool" ? this.toolStep : stage === "response" && liveReply && latest?.kind === "text" ? latest.text.trim().split(/\r?\n/, 1)[0] || void 0 : void 0;
     const previous = this.snapshot;
-    if (previous.active && previous.startedAt === this.startedAt && previous.stage === stage && previous.step === this.step) return previous;
-    return this.snapshot = { active: true, startedAt: this.startedAt, stage, ...this.step ? { step: this.step } : {} };
+    if (previous.active && previous.startedAt === this.startedAt && previous.stage === stage && previous.step === step) return previous;
+    return this.snapshot = { active: true, startedAt: this.startedAt, stage, ...step ? { step } : {} };
   }
 };
 
@@ -2628,13 +2650,17 @@ var DroidWorkingHud = class extends Text5 {
     this.locale = locale;
     this.native = void 0;
     const t = dictionary(locale);
-    this.label = !snapshot.active ? "" : snapshot.stage === "stopping" ? t.stop : snapshot.step ?? (snapshot.stage === "thinking" ? t.thinking : t.assistant);
+    this.label = !snapshot.active ? "" : snapshot.stage === "stopping" ? t.stop : snapshot.stage === "compaction" ? t.workingCompaction : snapshot.step ?? (snapshot.stage === "thinking" ? t.workingThinking : t.working);
     this.setText(this.label);
   }
   describe(cx) {
     if (!this.snapshot.active) return this.todos.hasTasks() ? node3("row", { role: "omp.hud", justify: "end", gap: "sm" }, [this.todos]) : EMPTY_NODE2;
     if (!this.native) {
-      const original = describeWorkingRow({ label: this.label, startedAt: this.snapshot.startedAt }, cx);
+      const original = describeWorkingRow({
+        label: this.label,
+        startedAt: this.snapshot.startedAt,
+        ...this.snapshot.stage === "compaction" ? { variant: { kind: "compaction" } } : {}
+      }, cx);
       const working = original.k === "row" ? { ...original, p: { ...original.p, grow: 1, basis: "content", min: { w: 0 } } } : original;
       this.native = col3([
         node3("row", { align: "center", gap: "sm", wrap: true }, [
@@ -3092,6 +3118,9 @@ async function run() {
     changed();
   });
   const commands = [
+    { name: "sessions", get description() {
+      return dictionary(locale).sessions;
+    } },
     { name: "new", description: "Droid: new conversation" },
     { name: "resume", description: "Droid: saved conversations" },
     { name: "model", description: "Droid: select model" },
@@ -3109,7 +3138,10 @@ async function run() {
     { name: "quit", description: "Bridge: close client" }
   ];
   const nativeChange = onNativeRenderingChange((on) => {
-    if (on) composer.ui.terminal.setTitle("Droid");
+    if (on) {
+      composer.ui.terminal.setTitle("Droid");
+      composer.ui.terminal.write(`${TSP_PREFIX}s;{"name":"droid-composer","css":".sf-place{display:none}"}\x1B\\`);
+    }
   });
   function busy() {
     return submitting || backend.state.needsInterrupt || ["connecting", "running", "approval", "question", "stopping"].includes(backend.state.phase);
@@ -3193,14 +3225,23 @@ async function run() {
     }
     const settings2 = b.session?.settings;
     const selected = b.models.find((model) => model.id === settings2?.modelId);
-    const key = JSON.stringify([locale, b.phase, b.context, b.usage, b.session?.title, selected?.label, settings2]);
+    const key = JSON.stringify([locale, b.phase, b.context, b.session?.title, selected?.label, settings2]);
     if (key !== factsKey) {
       factsKey = key;
-      const segments = ["error", "disconnected"].includes(b.phase) ? [{ key: "retry", label: t.reconnect, title: t.reconnectHint }] : [
-        { key: "sessions", label: t.sessions, title: t.sessions },
-        { key: "more", label: t.more, title: t.more },
-        { key: "mode", label: settings2?.interactionMode || t.mode, title: `${t.mode}: ${settings2?.interactionMode || t.unknown}` },
-        { key: "autonomy", label: settings2?.autonomyLevel || t.autonomy, title: `${t.autonomy}: ${settings2?.autonomyLevel || t.unknown}` }
+      const mode = settings2?.interactionMode === "auto" ? "Auto" : settings2?.interactionMode === "spec" ? "Spec" : settings2?.interactionMode || t.mode;
+      const autonomy = settings2?.autonomyLevel;
+      const autonomyLabel = autonomy === "off" ? t.autonomyOff : autonomy === "low" ? t.autonomyLow : autonomy === "medium" ? t.autonomyMedium : autonomy === "high" ? t.autonomyHigh : autonomy || t.unknown;
+      const autonomyTitle = `${t.autonomy}: ${autonomyLabel}`;
+      const controls = ["error", "disconnected"].includes(b.phase) ? [actionButton2(t.reconnect, "status.retry", { key: "retry", title: t.reconnectHint })] : [
+        actionButton2(mode, "status.mode", { key: "mode", title: `${t.mode}: ${mode}` }),
+        node4("row", {
+          role: "omp.btn",
+          gap: "xs",
+          align: "center",
+          aria: autonomyTitle,
+          title: autonomyTitle,
+          actions: { click: "status.autonomy" }
+        }, [node4("effort", { level: autonomy ?? "", aria: autonomyTitle }, void 0, "level")], "autonomy")
       ];
       facts = {
         context: node4("meter", {
@@ -3213,13 +3254,8 @@ async function run() {
           title: `${t.context}: ${b.context ? `${b.context.used.toLocaleString(locale)} / ${b.context.limit.toLocaleString(locale)}` : t.unknown}`
         }, void 0, "context"),
         model: { spans: [span2(`Droid \xB7 ${selected?.label || settings2?.modelId || t.default}`)], title: t.model },
-        extras: node4(
-          "row",
-          { role: "omp.composer.extras", grow: 1, gap: "xs", align: "center", wrap: true },
-          segments.map((item) => actionButton2(item.label, `status.${item.key}`, { key: item.key, title: item.title })),
-          "extras"
-        ),
-        usage: node4("text", { role: "omp.composer.usage", text: b.usage ? `${b.usage.input.toLocaleString(locale)} ${t.input} \xB7 ${b.usage.output.toLocaleString(locale)} ${t.output}` : "", title: t.usage, wrap: "none" }, void 0, "usage")
+        extras: node4("row", { role: "omp.composer.extras", grow: 1, gap: "xs", align: "center" }, controls, "extras"),
+        usage: EMPTY_NODE3
       };
     }
     composer.ui.terminal.setTitle(`Droid \xB7 ${b.session?.title || t.untitled}`);
@@ -3272,7 +3308,6 @@ async function run() {
         return dialogs.context();
       case "resume":
         return argument?.trim() ? open2(argument.trim()) : dialogs.sessions();
-      case "more":
       case "help": {
         const selected = await dialogs.choose(text2("Droid \u4F1A\u8BDD\u64CD\u4F5C", "Droid conversation actions"), commands.filter((item) => item.name !== "help").map((item) => ({ value: item.name, label: `/${item.name}`, description: item.description })));
         if (selected) await command(selected);

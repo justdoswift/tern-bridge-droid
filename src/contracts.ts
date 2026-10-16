@@ -60,6 +60,8 @@ export interface QuestionAnswer { index: number; question: string; answer: strin
 export interface BackendState {
   phase: Phase;
   needsInterrupt: boolean;
+  /** Droid-reported activity for this session; absent metadata is never guessed. */
+  workingState: string | null;
   session: SessionInfo | null;
   messages: ChatMessage[];
   models: ModelChoice[];
