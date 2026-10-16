@@ -14,7 +14,8 @@
 
 ## UI 复用边界
 
-- 直接依赖固定版本 `@oh-my-pi/pi-tui`，使用其 `Composer`、`AttachmentChipsBand`、`AssistantMessageComponent`、`UserMessageComponent`、`ToolExecutionComponent`、`SessionSelectorComponent`、`HookSelectorComponent`、`HookEditorComponent`、`ApprovalDialogComponent`、`AskDialogComponent`、`ReportPanel`、`ContextUsageView`、`describeWorkingRow` 和 `todoChecklistPhases`；不复制或修改上游组件源码。
+- 直接依赖固定版本 `@oh-my-pi/pi-tui`，使用其 `WelcomeComponent`、`Composer`、`AttachmentChipsBand`、`AssistantMessageComponent`、`UserMessageComponent`、`ToolExecutionComponent`、`SessionSelectorComponent`、`HookSelectorComponent`、`HookEditorComponent`、`ApprovalDialogComponent`、`AskDialogComponent`、`ReportPanel`、`ContextUsageView`、`describeWorkingRow` 和 `todoChecklistPhases`；不复制或修改上游组件源码。
+- 启动头复用原版欢迎卡，使用 [Factory 官方 Droid 像素字标](https://docs.factory.com/images/droid-ascii-wordmark.svg)，随安装包内置、跟随主题着色并等比适应窄窗格；启动不请求远程图片。新会话显示中英文引导，不再把“未命名会话”当作正文标题，也不冒用 omp 标志或版本号。已有会话显示真实标题，标题按原文展示，不解释其中的 Markdown、快捷键占位符或 `[NEW]`。下方使用原生键帽提示 `/`、Enter、Shift+Enter、Ctrl+O 和 Esc，切换语言时同步更新；只展示桥接端实际接入的操作，不宣称兼容 Droid 的全部快捷键。Droid 名称与字标属于 Factory，本插件为独立集成，不表示官方关联或背书。
 - 助手正文、列表、代码、表格、图片与思考区直接由原版 `AssistantMessageComponent` 渲染，不再用零散 Markdown 和 Disclosure 拼装回答。连续内容形成同一个消息段，工具卡片按 Droid 的原始消息顺序穿插；独立代码、Diff 和工具输出仍沿用原版渲染。
 - Read 源码按文件路径标记语言，使用原生代码高亮，不伪造读取区间的起始行号。Grep 的内容结果按已知文件路径、实际行号和匹配/上下文标记，交给原版文件行与编号代码视图；不同语言分别着色。无法确认的内容、截断提示、文件名列表、计数、Execute 日志和错误保留原输出。预览只使用 Droid 已返回的数据，不读取本机文件补内容，也不启用 omp 工具执行器。
 - 流式状态只来自实际增量及块完成事件；定稿、中断与历史恢复不会留下假运行状态。未知的逐消息用量、费用和速度保持缺省，不拿会话累计量冒充单条用量。实时思考只使用原组件观察到的本次展示计时，历史思考不补造耗时；恢复与组件身份绑定 Droid 的真实会话及消息 ID。

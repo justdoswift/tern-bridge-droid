@@ -13,7 +13,7 @@ await mkdir(dist, { recursive: true });
 await build({
   absWorkingDir: root, entryPoints: ['src/main.ts'], outfile: 'dist/client.mjs',
   bundle: true, packages: 'external', platform: 'node', target: 'es2023', format: 'esm',
-  sourcemap: false, legalComments: 'eof',
+  sourcemap: false, legalComments: 'eof', loader: { '.svg': 'text' },
 });
 const packages = new Map();
 async function copyRuntime(name, from = root, optional = false) {
@@ -51,7 +51,12 @@ async function copyRuntime(name, from = root, optional = false) {
 for (const name of Object.keys(manifest.dependencies)) await copyRuntime(name);
 const native = `@oh-my-pi/pi-natives-${process.platform}-${process.arch}`;
 if (![...packages.values()].some(item => item.metadata.name === native)) throw new Error(`The original omp UI requires its platform addon: ${native}`);
-const notices = [];
+const notices = [
+  'Factory / Droid wordmark\n' +
+  'Source: https://docs.factory.com/images/droid-ascii-wordmark.svg\n\n' +
+  'The Droid name and wordmark remain the property of Factory AI.\n' +
+  'Included solely to identify the independently developed Droid integration; no affiliation or endorsement is implied.',
+];
 for (const { version, source, metadata } of [...packages.values()].sort((a, b) => a.metadata.name.localeCompare(b.metadata.name) || a.version.localeCompare(b.version))) {
   const name = metadata.name;
   const files = await readdir(source);

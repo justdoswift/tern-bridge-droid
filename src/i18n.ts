@@ -2,6 +2,8 @@ import type { Locale } from './contracts.js';
 
 const en = {
   identity: 'Droid', untitled: 'Untitled session', newSession: 'New', sessions: 'Sessions',
+  welcomeHint: 'Enter a task or question to start a conversation.',
+  welcomeCommands: 'Commands', welcomeNewline: 'New line', welcomeDetails: 'Toggle details', welcomeStop: 'Stop task',
   model: 'Model', reasoning: 'Reasoning', mode: 'Mode', autonomy: 'Autonomy', default: 'Default',
   autonomyShort: 'Autonomy', autonomyOff: 'Off', autonomyLow: 'Low', autonomyMedium: 'Medium', autonomyHigh: 'High',
   send: 'Send', stop: 'Stop', draft: 'Message Droid', draftHint: 'Enter to send · Shift+Enter for a new line',
@@ -31,6 +33,8 @@ type Dictionary = { [K in keyof typeof en]: string };
 const zh: Dictionary = {
   editPlanHint: '修改计划后接受',
   identity: 'Droid', untitled: '未命名会话', newSession: '新建', sessions: '会话',
+  welcomeHint: '输入任务或问题，开始对话。',
+  welcomeCommands: '命令菜单', welcomeNewline: '换行', welcomeDetails: '展开/收起详情', welcomeStop: '停止任务',
   model: '模型', reasoning: '思考强度', mode: '模式', autonomy: '自主权限', default: '默认',
   autonomyShort: '权限', autonomyOff: '关闭', autonomyLow: '低', autonomyMedium: '中', autonomyHigh: '高',
   send: '发送', stop: '停止', draft: '给 Droid 发消息', draftHint: 'Enter 发送 · Shift+Enter 换行',

@@ -1,3 +1,11 @@
+Factory / Droid wordmark
+Source: https://docs.factory.com/images/droid-ascii-wordmark.svg
+
+The Droid name and wordmark remain the property of Factory AI.
+Included solely to identify the independently developed Droid integration; no affiliation or endorsement is implied.
+
+========================================================================
+
 @factory/droid-sdk 0.9.1
 License: Apache-2.0
 

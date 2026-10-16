@@ -20,6 +20,7 @@ import { DroidTranscript } from './omp-transcript.js';
 import { DroidDialogs } from './omp-dialogs.js';
 import { DroidTodoHud } from './omp-todos.js';
 import { DroidWorkingHud } from './omp-working.js';
+import { DroidWelcome } from './omp-welcome.js';
 import { isDroidWorking } from './work-state.js';
 import { DroidImageComposer, imageAdmissionError, type ImageSubmission } from './omp-images.js';
 import { dictionary } from './i18n.js';
@@ -79,14 +80,14 @@ async function run(): Promise<void> {
   let expanded = false;
   let autocompleteCwd = '';
   const notice = new Text('');
-  const identity = new Text('Droid');
+  const welcome = new DroidWelcome(locale);
   const composer = new Composer({ preferences: { quiet: true, spellingAutocomplete: 'off', spellingTypoDetection: false }, exit: code => { process.exitCode = code; void shutdown(); } });
   const backend = new DroidBridge({ cwd, dataDir, execPath: values.droid ?? (typeof preferences.droidPath === 'string' ? preferences.droidPath : undefined), onChange: changed });
   const transcript = new DroidTranscript(composer.ui, cwd);
   const todos = new DroidTodoHud();
   const working = new DroidWorkingHud(todos);
   const dialogs = new DroidDialogs(composer, backend, { locale: () => locale, onError: report, onChange: changed, openSession: id => open(id) });
-  composer.setHeaderExtras([identity], []);
+  composer.setHeaderExtras([welcome], []);
   composer.editor.magicKeywordsEnabledOverride = false;
   composer.editor.attachmentChips = new AttachmentChipsBand(composer.editor, composer.ui.imageBudget, () => composer.ui.requestRender());
   composer.editor.composerState = () => ({ running: busy(), thinking: backend.state.session?.settings.reasoningEffort, title: backend.state.session?.title || undefined });
@@ -135,12 +136,17 @@ async function run(): Promise<void> {
         padding: 0 10px !important; font-family: var(--sans); font-size: 12.5px; font-weight: 500; line-height: 26px;
       }
       [data-role='omp.composer.extras'] > [data-role='omp.btn'] > .sf-text { line-height: 26px; }
+      [data-role='omp.welcome'] [data-role='omp.welcome.lockup'] { height: auto; }
+      [data-role='omp.welcome'] [data-role='omp.welcome.tip'] { opacity: 1; animation: none; }
+      [data-role='droid.welcome.wordmark'] { color: var(--accent); border: none; border-radius: 0; box-shadow: none; }
+      [data-role='droid.welcome.wordmark'] path { fill: currentColor; }
+      [data-role='droid.welcome.shortcuts'] { justify-content: center; margin-top: 12px; font-family: var(--sans); font-size: 12px; }
     `,
   })}\x1b\\`;
   const nativeChange = onNativeRenderingChange(on => {
     if (on) {
       composer.ui.terminal.setTitle('Droid');
-      // Directory visibility and control alignment affect only this native surface.
+      // Welcome and composer styles affect only this native surface.
       composer.ui.terminal.write(composerStyle);
     }
   });
@@ -197,7 +203,7 @@ async function run(): Promise<void> {
       bannerMessage = error;
       banner = error ? new ErrorBannerComponent(error, () => { uiError = null; dismissedBackendError = b.error; changed(); }) : undefined;
     }
-    identity.setText(`Droid · ${b.session?.title || t.untitled}`);
+    welcome.sync(b.session?.title ?? '', locale);
     notice.setText(b.notice ?? '');
     transcript.sync(b);
     todos.sync(b, locale);

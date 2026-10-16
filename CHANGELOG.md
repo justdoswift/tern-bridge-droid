@@ -4,6 +4,7 @@
 
 - Add installable `tern-bridge-droid` commands for native Droid conversations, history and right-hand splits.
 - Reuse the original omp Composer, assistant messages, user bubbles, tool cards, session picker, selectors, approval and AskUser components through `@oh-my-pi/pi-tui` 18.11.0; remove the custom chat view/editor/styles.
+- Adapt the original omp welcome card with Factory's official Droid pixel wordmark, bundled offline and tinted by the current theme. Preserve literal authored session titles instead of an untitled placeholder or omp identity/version. Add bilingual native keycap hints for the bridge's working slash menu, Enter, Shift+Enter, Ctrl+O and Esc controls; keep the wordmark proportional and the hints wrapping in narrow panes.
 - Preserve Droid login, saved conversation identity, working directory, model selection and permission policy.
 - Add searchable history, rename/fork/compact/inspected rewind, model controls, exact offered approvals, editable plans and AskUser.
 - Fix duplicate modal wrapping around the original omp option picker: remove the empty horizontal sheet and extra dimming while preserving search, scrolling and exact selection. Document the normal macOS ⌘K launcher instead of a control-socket command.
