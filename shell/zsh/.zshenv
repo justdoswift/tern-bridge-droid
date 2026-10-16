@@ -17,9 +17,15 @@ fi
 # and functions keep precedence. `command droid` still runs the official CLI.
 if [[ -o interactive ]]; then
 	_tern_droid_bridge_ready() {
-		if (( ! $+aliases[droid] && ! $+functions[droid] )); then
-			function droid { "$TERN_DROID_BRIDGE_DIR/bin/droid" "$@" }
-		fi
+		'builtin' 'local' name canonical=${commands[droid]-}
+		for name in {d,D}{r,R}{o,O}{i,I}{d,D}; do
+			(( $+aliases[$name] || $+functions[$name] )) && continue
+			# Preserve unrelated case-sensitive executables as well as user bindings.
+			if [[ "$name" != droid ]] && (( $+commands[$name] )) && [[ ! "${commands[$name]}" -ef "$canonical" ]]; then
+				continue
+			fi
+			functions[$name]='"$TERN_DROID_BRIDGE_DIR/bin/droid" "$@"'
+		done
 		precmd_functions=("${(@)precmd_functions:#_tern_droid_bridge_ready}")
 		'builtin' 'unfunction' '_tern_droid_bridge_ready'
 		'builtin' 'return' 0

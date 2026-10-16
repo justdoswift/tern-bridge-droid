@@ -2,6 +2,10 @@
 
 ## 0.1.0 — Unreleased
 
+- 修复连续两次 Ctrl+C 无法退出；保留原版 omp 的双击退出行为，并停止当前任务、清理未发送草稿。
+- Tern 本机 zsh 入口支持 `Droid`、`DROID` 及混合大小写，保留已有 alias、function 和独立同名程序；README 改为安装与日常使用指南。
+- Restore double-Ctrl-C exit through the original omp handler, with task interruption and draft cleanup.
+- Accept case variants of `droid` in local Tern zsh panes without replacing existing user commands; rewrite the README around installation and everyday use.
 - Add installable `tern-bridge-droid` commands for native Droid conversations, history and right-hand splits.
 - Open the existing native bridge in the same pane when a new local zsh terminal runs bare interactive `droid`. Install a pane-local function through Tern's spawn hook without changing global profiles, PATH or the official executable; preserve custom ZDOTDIR startup order and existing aliases/functions. Keep argument-bearing commands and pipelines on the selected CLI, retain `command droid` as the normal CLI escape, and preserve the actual cwd and exit status.
 - Reuse the original omp Composer, assistant messages, user bubbles, tool cards, session picker, selectors, approval and AskUser components through `@oh-my-pi/pi-tui` 18.11.0; remove the custom chat view/editor/styles.

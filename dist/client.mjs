@@ -3179,9 +3179,12 @@ async function run() {
   composer.editor.onEscape = () => {
     void perform(() => busy() ? backend.interrupt() : Promise.resolve());
   };
+  const clearOrExit = composer.editor.onClear;
   composer.editor.onClear = () => {
+    clearOrExit?.();
+    if (closing) return;
+    composer.editor.clearDraft();
     if (busy()) void perform(() => backend.interrupt());
-    else composer.editor.clearDraft();
   };
   composer.editor.onExit = () => {
     void perform(() => command("quit"));

@@ -1,169 +1,142 @@
-# tern-bridge-droid
+# Tern Bridge for Droid
 
-让 Droid 使用 **omp 原版 UI 组件**在 Tern 中对话：`Composer` 输入区、助手消息、用户气泡、工具卡片、会话选择器、审批和 AskUser。插件负责把 Droid 的数据及操作绑定到这些组件，不自行重画聊天页面，不使用 WebView，也不抓取 Droid TUI 字符。
+**在 Tern 里用 Droid，保留 omp 的对话体验。**
 
-[GitHub](https://github.com/justdoswift/tern-bridge-droid) · [问题反馈 / Issues](https://github.com/justdoswift/tern-bridge-droid/issues) · [Pi 版本](https://github.com/justdoswift/tern-bridge-pi)
+喜欢 Tern 中 omp 的消息排版、代码高亮和输入框，但想继续使用 Factory Droid？这个插件把两者接起来：界面使用原版 omp 组件，模型、工具、权限和历史会话仍由 Droid 管理。
 
-## 环境
+[安装](#安装) · [使用](#使用) · [常见问题](#常见问题) · [反馈问题](https://github.com/justdoswift/tern-bridge-droid/issues) · [Pi 版本](https://github.com/justdoswift/tern-bridge-pi)
 
-- Bun 1.3.14 或更新版本（运行客户端）。
-- 已安装并完成认证的 Droid CLI。
-- 启用原生程序界面的 Tern。
-- Node.js 22 或更新版本及 npm（仅开发、检查和打包时需要）。
-- 本机已验证的组合：macOS arm64、Tern 0.8.3、Droid 0.241.1、Bun 1.3.14、`@oh-my-pi/pi-tui` 18.11.0。
+## 能做什么
 
-启动器支持 macOS/Linux 的本机窗格；本次安装包针对 **macOS arm64** 构建。原版 UI 包含平台原生扩展，其他系统或架构需要在目标平台重新构建，不能复制这份安装包后直接运行。Linux 尚未实机验证；Windows、远程主机和移动端不在本次支持范围。远程窗格中的命令不会把本机插件路径或凭据发送到远程机器。
+- **读起来更清楚**：流式回复、Markdown、代码高亮、Diff，以及可展开的工具输出和思考内容。
+- **直接粘贴图片**：按 `⌘V` 添加截图或图片，查看缩略图后随消息发送，不用找上传按钮。
+- **接着原来的会话聊**：搜索和恢复 Droid 历史，也可以新建、重命名、分叉和回退。
+- **随时调整工作方式**：在输入框底部选择模型、思考强度、`Auto` / `Spec` 和自主权限；需要授权时在界面中确认。
+- **知道它在做什么**：查看当前步骤、Todo 进度和上下文用量；运行中的标签页带有活动绿点。
 
-## UI 复用边界
+这是一个独立桥接插件，不是新的 AI 服务，也不是 Tern 的整套汉化包。插件操作支持中文和 English，部分上游界面仍为英文。
 
-- 直接依赖固定版本 `@oh-my-pi/pi-tui`，使用其 `WelcomeComponent`、`Composer`、`AttachmentChipsBand`、`AssistantMessageComponent`、`UserMessageComponent`、`ToolExecutionComponent`、`SessionSelectorComponent`、`HookSelectorComponent`、`HookEditorComponent`、`ApprovalDialogComponent`、`AskDialogComponent`、`ReportPanel`、`ContextUsageView`、`describeWorkingRow` 和 `todoChecklistPhases`；不复制或修改上游组件源码。
-- 启动头复用原版欢迎卡，使用 [Factory 官方 Droid 像素字标](https://docs.factory.com/images/droid-ascii-wordmark.svg)，随安装包内置、跟随主题着色并等比适应窄窗格；启动不请求远程图片。新会话显示中英文引导，不再把“未命名会话”当作正文标题，也不冒用 omp 标志或版本号。已有会话显示真实标题，标题按原文展示，不解释其中的 Markdown、快捷键占位符或 `[NEW]`。下方使用原生键帽提示 `/`、Enter、Shift+Enter、Ctrl+O 和 Esc，切换语言时同步更新；只展示桥接端实际接入的操作，不宣称兼容 Droid 的全部快捷键。Droid 名称与字标属于 Factory，本插件为独立集成，不表示官方关联或背书。
-- 助手正文、列表、代码、表格、图片与思考区直接由原版 `AssistantMessageComponent` 渲染，不再用零散 Markdown 和 Disclosure 拼装回答。连续内容形成同一个消息段，工具卡片按 Droid 的原始消息顺序穿插；独立代码、Diff 和工具输出仍沿用原版渲染。
-- Read 源码按文件路径标记语言，使用原生代码高亮，不伪造读取区间的起始行号。Grep 的内容结果按已知文件路径、实际行号和匹配/上下文标记，交给原版文件行与编号代码视图；不同语言分别着色。无法确认的内容、截断提示、文件名列表、计数、Execute 日志和错误保留原输出。预览只使用 Droid 已返回的数据，不读取本机文件补内容，也不启用 omp 工具执行器。
-- 流式状态只来自实际增量及块完成事件；定稿、中断与历史恢复不会留下假运行状态。未知的逐消息用量、费用和速度保持缺省，不拿会话累计量冒充单条用量。实时思考只使用原组件观察到的本次展示计时，历史思考不补造耗时；恢复与组件身份绑定 Droid 的真实会话及消息 ID。
-- 任务执行时复用原版工作栏的指示器、观察计时和步骤文字，不固定显示 `Droid`。正在运行的工具展示其 `summary` 或工具名；没有活动工具时，展示当前流式回复的首行。思考和上下文压缩使用 Droid 实际报告的状态，压缩同时使用原版不定进度条；没有具体步骤时显示工作状态。不把工具日志、历史答复或思考正文当作步骤，已结束工具不留下旧步骤。工作栏与 Todo 环形进度、完成数量一起对齐输入框，空间不足时自然换行。计时只覆盖本次观察到的运行，不补造恢复前的耗时。正文不额外插入阶段标签，停止仍由原版 Composer 按钮处理。
-- Droid 执行期间，横向或竖向标签页显示小绿点；等待作者审批/回答、空闲、出错和关闭时不显示。执行状态通过原生 OSC 9;4 传给 Tern，插件只添加活动点样式，不改标签标题、作者设置的标签颜色或其他程序的状态。
-- 会话选择器仍是原版组件，只省略 Droid 不提供的会话文件大小等元数据。会话列表、模型选项、执行与审批只来自 Droid。
-- 底栏保留模型、推理强度、`Auto` / `Spec`、自主权限和发送/停止。四个胶囊同高、等间距，与原尺寸的发送/停止按钮共用中线，并跟随字体缩放。思考强度保留原生环形图标；自主权限使用带“权限 / Autonomy”标签的原生三格程度条，关闭/低/中/高分别为 0/1/2/3 格，不显示百分比。悬停与辅助说明提供实际级别，点击仍打开 Droid 实际可选级别并保留授权确认。
-- 不显示工作目录、“会话”“更多”或输入/输出 Token 数；目录隐藏和按钮对齐样式只作用于当前 Droid 原生 surface，不改变实际工作目录、其他程序的底栏或后端用量统计。会话与其他操作放进 `/` 菜单；发送/连接出错时优先显示“重新连接会话”。窄窗格仍遵循 Tern Composer 自身的压缩规则。图片直接粘贴，不另设上传按钮。
-- 输入框上方只显示上下文用量百分比，不再显示 `250,000` 一类总容量数字；悬停提示与详情保留真实用量/容量。点击用量条，或输入 `/context`，立即打开原版报告面板并读取 Droid `getContextBreakdown()`。分类、总用量、容量和剩余空间来自 Droid；保留 MCP、用户上下文、AGENTS.md 与 Droid 配置等独立类别。接口不提供自动压缩阈值，不套用 omp 的 85% 或伪造预留量。旧 CLI 不支持或读取失败时在面板内重试，不改变会话执行状态，也不发送模型请求。
-- Droid 成功执行 `TodoWrite` 后，工作栏显示原生任务进度环、当前任务和完成数量，点击展开清单。读取其编号、状态标签字符串中的 `pending`、`in_progress`、`completed`；未执行、失败、中断的写入不覆盖已确认清单，成功清空时移除面板，无法识别的新格式不沿用旧清单。历史恢复展示最后一次成功写入，切换会话不保留旧任务。不推断阶段、不代替 Droid 改任务，也不注入催办提示词。
-- 不创建 omp `AgentSession`，不启动 omp 的模型循环，不读取 omp 的账号、模型配置或会话数据库。不是“由 omp 调用一次 Droid 工具”。
-- 插件自己的命令和提示提供中文/English；上游组件内部的英文文案保留原样。这不是 Tern 或 omp 的整套汉化包。
+## 安装
 
+先准备好：
 
-## 构建和安装
+- 支持原生程序界面的 [Tern](https://docs.stencil.so/tern/index.html)。
+- 已安装、完成登录且能正常使用的 **Droid CLI**。
+- **Bun 1.3.14+**，以及用于构建安装包的 **Node.js 22+ 和 npm**。
 
-从公开仓库克隆，并在目标平台构建：
+目前需要从源码构建。在准备使用插件的机器上执行：
 
 ```sh
 git clone https://github.com/justdoswift/tern-bridge-droid.git
 cd tern-bridge-droid
 npm ci --ignore-scripts
-npm run check
-npm test
 npm run package
-```
-
-随后安装干净的插件包：
-
-```sh
 tern plugin install ./artifacts/package/tern-bridge-droid
 ```
 
-已有安装时，先退出当前 Droid 插件会话，再覆盖更新，无需先卸载：
-
-```sh
-tern plugin install --force ./artifacts/package/tern-bridge-droid
-```
-
-开发时可以链接同一个干净包，修改源码后重新打包：
-
-```sh
-tern plugin link ./artifacts/package/tern-bridge-droid
-```
-
-安装包包含入口、客户端、原版 UI 及 Droid SDK 的**生产运行依赖**、使用说明和第三方许可，不需要在安装时联网下载 npm 依赖。必须保留包内的 `dist/node_modules`，它不是开发目录的依赖备份。不要把项目根目录的开发 `node_modules` 复制进 Tern。`dist/client.mjs` 与许可清单保留在源仓库中；平台原生二进制不加入 Git。
-
-卸载已安装的副本使用 `tern plugin remove tern-bridge-droid`；取消开发链接使用 `tern plugin unlink tern-bridge-droid`。两者都不会删除 Droid 的历史会话。退出已打开的客户端后再移除插件，并新开终端窗格，去除旧窗格中的启动函数。
-
-## 使用
-
-在 Tern **新建本机 zsh 终端窗格**后，直接输入：
+安装后**重启 Tern，再新建一个本机 zsh 终端窗格**。在该窗格输入：
 
 ```sh
 droid
 ```
 
-无参数的交互启动会在**当前窗格**打开本插件，使用当前实际工作目录；不会再开一个标签页，也不会先启动官方 TUI 再强行切换。输入 `/quit` 返回原来的终端。
+`Droid`、`DROID` 和混合大小写也可以。插件会在当前窗格打开，使用当前工作目录；输入 `/quit` 返回终端。已有的同名 alias、function 或独立程序不会被覆盖。
 
-安装或更新后，先让 Tern 重载插件（重启 Tern 即可），再新开终端窗格。现有 Shell 不注入按键或补写配置。自动入口目前适用于 macOS/Linux 的本机 **zsh**；其他 Shell、远程主机继续使用原来的 CLI，仍可通过下面的命令面板打开支持的本机插件界面。
+> 当前验证平台为 macOS Apple Silicon。Linux 需要在目标机器构建，尚未实机验证；Windows 和远程窗格不在支持范围。安装包包含平台原生依赖，不能跨系统或架构直接复制使用。
 
-`droid --version`、`droid exec …` 等所有带参数命令、管道和非交互调用仍交给实际 Droid CLI，不改参数或退出状态。需要官方交互界面时使用 `command droid`；如需按插件配置的 `droidPath` 绕过桥接，可使用 `TERN_DROID_BRIDGE_BYPASS=1 droid`。
+## 使用
 
-入口使用 Tern 的本机 `spawn` hook 和插件自己的 zsh 启动文件，只在该窗格建立函数；不修改全局 `PATH`、`.zshrc`、`.zshenv`、`.bashrc` 或官方可执行文件。原有 `ZDOTDIR` 及启动文件顺序保持不变，已有同名 alias/function 不会被覆盖；若已有自定义 `droid`，请继续使用命令面板，或自行调整该自定义命令。
+### 输入和快捷键
 
-在 Tern 窗口按 **⌘K** 打开命令面板（macOS 默认键位），搜索 `Droid`，然后选择：
+| 操作 | 快捷键 |
+| --- | --- |
+| 发送消息 | `Enter` |
+| 换行 | `Shift+Enter` 或 `Alt+Enter` |
+| 粘贴文字或图片（macOS） | `⌘V` |
+| 展开 / 收起工具输出与思考 | `Ctrl+O` |
+| 停止任务 / 关闭当前面板 | `Esc` |
+| 清空草稿并请求停止任务 | `Ctrl+C` |
+| 退出插件、返回终端 | 连按两次 `Ctrl+C` |
 
-- **Droid：新建原生对话 / Droid: New native conversation**
-- **Droid：恢复历史会话 / Droid: Resume a conversation**
-- **Droid：在右侧分屏打开 / Droid: Open in a right split**
+图片粘贴后不会自动发送；发送失败时保留草稿。图片能否被模型处理，取决于你在 Droid 中选择的模型。
 
-日常启动不使用 `tern ctl palette ...`，也不需要 `tern serve` 或开发控制 socket。
+### 会话和设置
 
-新建对话使用当前本机窗格的工作目录；恢复会话使用 Droid 已保存的工作目录。恢复会话同时加载历史消息，不只恢复模型上下文。
+输入 `/` 打开菜单，不需要记住全部命令：
 
-原版输入区底部的模型、推理强度、模式和自主权限绑定到 Droid 实际提供的数据；点击 `Auto` / `Spec` 或权限 gauge，也可通过 `/mode` 和 `/autonomy` 调整。自主权限列表遵守 Droid 返回的组织策略，不展示被禁止的级别。已有选择和新会话默认值由 Droid 决定，插件不硬编码模型、不自动提升权限，也不把 Spec 切换视为接受计划。
+| 想做什么 | 命令 |
+| --- | --- |
+| 打开历史会话 / 新建会话 | `/sessions` / `/new` |
+| 选择模型 / 思考强度 | `/model` / `/reasoning` |
+| 切换 Auto、Spec / 自主权限 | `/mode` / `/autonomy` |
+| 查看上下文用量 | `/context`，或点击输入框上方的用量条 |
+| 重命名 / 分叉 / 回退 | `/rename` / `/fork` / `/rewind` |
+| 压缩上下文 | `/compact` |
+| 重新连接 / 切换界面语言 | `/retry` / `/language` |
+| 查看操作 / 退出 | `/help` / `/quit` |
 
-输入 `/` 可访问会话、重命名、分叉、压缩和回退等操作，`/sessions` 直接打开原版会话选择器。回退先展示文件影响：**仅回退对话**不会请求恢复或删除文件；恢复文件必须单独确认。压缩可能调用模型并消耗当前 Droid 额度。
+回退会先列出文件影响；**仅回退对话不会恢复文件**，恢复文件需要另行确认。压缩上下文可能调用模型并消耗 Droid 额度。重新连接不会自动重发上一条消息。
 
-输入 `/help` 可打开操作选择器。支持 `/sessions`、`/new`、`/resume`（也可 `/resume 会话ID`）、`/model`、`/reasoning`、`/mode`、`/autonomy`、`/context`、`/rename`、`/fork`、`/compact`、`/rewind`、`/retry`、`/language`、`/quit`。补全跟随当前 Droid 会话的实际目录，而不是固定使用启动目录。已附图片时，输入按图片消息发送，不把消息中的 slash 文本误执行为命令；模型、推理强度、模式与权限仍可点击底栏调整，会话可用快捷键打开。
+也可以按 **`⌘K`** 打开 Tern 命令面板，搜索 **Droid**，选择新建对话、恢复历史或在右侧分屏打开。
 
+## 更新与卸载
 
-### 输入与键盘
-
-- Enter：发送；Shift+Enter 或 Alt+Enter：换行。
-- macOS 的 ⌘V：直接粘贴剪贴板图片或文字；图片自动进入原生附件区，无需选择文件。
-- 选择、搜索、编辑、撤销和多行粘贴使用 omp 原组件的行为，不维护第二套键盘/光标状态机。
-- Ctrl+Alt+Shift+O：打开会话选择；Ctrl+Alt+Shift+N：新建对话。不覆盖 Tern 自己的 Cmd+O/Cmd+N。
-- Esc：关闭当前面板；待审批/提问时取消；任务运行时请求停止。
-- Cmd/Ctrl+Z、Shift+Cmd/Ctrl+Z：撤销、重做。
-- Ctrl+O：在普通输入区展开/收起工具与思考内容；阅读历史使用 Tern 的原生滚动。
-- 支持 Tern 原生选区、中文输入法提交、多行粘贴与 UTF-16 光标偏移。
-
-任务运行时可以继续写草稿，但不会偷偷排队发送。只有 Droid 确认记录了用户消息，客户端才清空相应草稿。连接失败不会自动重放消息；“重新连接”只重新加载会话。
-
-### 图片附件
-
-- 复制图片或截图后，在输入框按 **⌘V**，自动显示与 omp 一致的缩略图卡片、`#N` 编号和像素尺寸；不弹文件选择框，不提供上传按钮或 `/attach` 手动入口。普通文字仍按文字粘贴，也保留原生图片文件拖放。
-- 支持 **JPEG、PNG、GIF、WebP**；macOS 剪贴板的 TIFF 图片由原生读取器转换后处理。附件卡片直接使用上游 `AttachmentChipsBand`，不另画预览 UI；删除输入中的图片标记会同步移除预览和待发送图片。
-- 粘贴只暂存附件，不自动发送或调用模型。按 Enter 后，图片与文字一起通过 Droid SDK 的 base64 image 参数发送，也允许只发送图片。标记和本机路径不会冒充图片内容；紧接粘贴的 Enter 会等异步读取结束，不会抢先发出空消息。
-- 只有 Droid 确认持久化了这条用户消息，才清空对应的文字和附件。失败、重连或迟到回执不清掉未接受的草稿；发送后继续编辑、增加附件时，也不会清掉新草稿。切换到另一个会话会移除旧会话附件，切换失败时保留可恢复的原草稿。
-- 明确不支持图片的模型会阻止发送并保留草稿；能力未知时让 Droid 实际处理，失败后不剥离图片、不重试、不自动切换模型。文件须通过原版解码器和大小限制，拒绝目录、设备与无效图片。
-- 只在作者显式粘贴时读取剪贴板。插件不新建持久图片缓存，不扫描目录，也不另行上传到第三方；已发送图片的保存遵循 Droid 自身的会话策略。
-
-
-## 审批和 AskUser
-
-执行请求展示原始命令/文件信息和 Droid 当前实际提供的选项。持续授权会明确标识；选择非取消结果后，还需在原版审批组件中明确确认（默认 Ctrl+Enter），普通 Enter 不会直接授权。编辑计划会将提交的完整内容交回 Droid。拒绝、停止或会话替换会使旧请求失效，迟到响应不能批准新请求。AskUser 使用原版多题/多选/自定义回答组件，合并所选答案、自定义文本与备注后按 Droid 的原始问题身份提交。
-
-当前 SDK 的明确限制：
-
-- Spec 的 `proceed_new_session*` 选项会显示为禁用，并说明原因。SDK 没有公开可靠的新会话交接标识，不能把任意子会话通知当成新执行会话。仍支持当前会话中接受计划，以及显式分叉。
-- 如果恢复结果只有旧审批/提问快照、没有可回答的实时 RPC，请求不会被伪造回复，会话保持不可发送状态；需要回到原客户端处理，或通过 Droid 确认停止后恢复。
-- 锁只协调本插件的实例，无法阻止独立的 Droid CLI 同时操作同一个会话。不要在两处并发编辑同一 Droid 会话。
-- Mission Control、任意 Droid 原生 TUI 页面、独立 CLI 的所有快捷键和 slash 菜单不是此客户端的界面。后端工具与技能仍由 Droid 发现和执行。
-
-## 配置和认证
-
-本客户端通过官方 SDK 的底层 `ProcessTransport` / `DroidClient` 复用本机 Droid CLI 认证。已实测不需要额外创建 Factory API Key；已有 `FACTORY_API_KEY` 环境变量仍由 Droid 使用。认证错误应在 Droid 官方 CLI 中处理，插件不读取、复制或保存 token 文件。
-
-通过 `/language` 切换插件文案的中文/English。偏好保存在 Tern 插件数据目录 `plugin-data/tern-bridge-droid/preferences.json`，可配置 `locale`、`bunPath`、`droidPath`。找不到可执行文件时，在未接管命令的终端运行 `command -v bun`、`command -v droid`，将得到的绝对路径填入对应字段；当前 zsh 中也可用 `whence -p droid` 查找官方可执行文件，不能把插件入口填成 `droidPath`。命令入口的路径配置在新建窗格时读取，修改后需要新开窗格。旧的 `nodePath` 不再用于启动。命令面板标题会在下次插件重载时采用保存的语言。
-
-插件不修改全局 Droid 默认设置，不新增会话数据库，不自动重试模型请求；主动关闭 Droid 传输日志和共享 UI 的 TSP 录制。Droid 自身的保存/云同步设置及 Tern 自身的屏幕快照机制仍适用。关闭窗格会关闭客户端及 Droid 子进程；已保存历史仍可恢复。仅关闭窗口时，进程是否保留由 Tern 守护进程的正常生命周期决定；守护进程重启不承诺自动恢复正在执行的模型任务。
-
-## 开发
+更新前先退出已打开的 Droid 插件会话，在克隆的仓库目录执行：
 
 ```sh
-npm run check
-npm test
-npm run build
+git pull --ff-only
+npm ci --ignore-scripts
+npm run package
+tern plugin install --force ./artifacts/package/tern-bridge-droid
 ```
 
-直接在 Tern 的 Shell 窗格运行构建后的客户端：
+更新后重启 Tern，再新建终端窗格。出现 “already installed” 时，使用上面的 `--force` 覆盖安装即可，不必先卸载。
 
-```sh
-bun dist/client.mjs --cwd . --data-dir ./artifacts/development-data
+卸载：`tern plugin remove tern-bridge-droid`。退出客户端后执行，再新开终端窗格；**不会删除 Droid 的历史会话**。
+
+## 常见问题
+
+**还能用官方 Droid 界面吗？**
+
+可以，运行 `command droid`。`droid --version`、`droid exec …` 等带参数命令仍交给官方 CLI。插件不修改全局 Shell 配置或 Droid 可执行文件。
+
+**输入 `droid` 没打开插件？**
+
+确认已经重启 Tern，并且使用新建的本机 zsh 窗格。其他 Shell 或已有同名 alias/function 时，用 `⌘K` 命令面板打开。日常使用不需要 `tern serve` 或 `tern ctl`。
+
+**需要另外填 API Key 吗？**
+
+插件复用本机 Droid 的认证，不要求另建 Key。先在官方 CLI 中解决登录问题；模型调用和额度仍由 Droid 管理。不要在桥接和官方 CLI 中同时操作同一个会话。
+
+**支持 Droid 的所有功能吗？**
+
+不支持完整复制官方 TUI。Mission Control 和部分专有页面不在范围内；Spec 的“在新会话执行”目前不可用，可以在当前会话执行或显式分叉。恢复的审批如果已无法响应，需要回到官方客户端处理。
+
+<details>
+<summary>找不到 Bun 或 Droid 时，如何指定路径？</summary>
+
+在 Tern 配置目录下的 `plugin-data/tern-bridge-droid/preferences.json` 中设置：
+
+```json
+{
+  "locale": "zh-CN",
+  "bunPath": "/absolute/path/to/bun",
+  "droidPath": "/absolute/path/to/droid"
+}
 ```
 
-可选参数：`--session ID`、`--pick-session`、`--locale zh-CN|en-US`、`--droid PATH`。`--help` 不连接 Droid；在非 Tern 终端中启动会明确失败，不生成伪造的回复或降级成假聊天界面。
+用 `command -v bun`、`whence -p droid` 在 zsh 中查找真实可执行文件。不要把插件的 `bin/droid` 填成 `droidPath`；修改后新建终端窗格。
 
-实现分为 Luau 启动器/标签活动样式、窗格内 zsh 命令入口、原版 omp UI 的数据/操作绑定、Droid 协议与会话控制、历史消息归一化和跨进程会话锁。行为测试覆盖协议身份、消息合并、审批与取消、回退计划、锁归属、运行步骤及真实原组件的图片草稿与键盘退出生命周期；实际 Tern 检查覆盖原版组件呈现、会话恢复、中文/多行输入、审批、AskUser、图片附件、任务工作栏和错误恢复。命令入口通过隔离安装检查同窗格启动、工作目录、参数/管道透传、官方 CLI 绕过，以及自定义 `ZDOTDIR`、alias/function 的保留。协议夹具不证明模型质量；仅一次已授权的真实 Droid 工具调用用于验证端到端连接，之后不重复付费请求。
+</details>
 
-## 开源许可 / License
+## English
 
-插件自有代码采用 [MIT License](LICENSE)。`@oh-my-pi/pi-tui`、`@factory/droid-sdk` 及其传递依赖保留各自的许可证；完整构建包保留原许可文件，汇总见 [`dist/THIRD_PARTY_NOTICES.txt`](dist/THIRD_PARTY_NOTICES.txt)。
+Use Factory Droid in Tern with the original omp conversation UI. Droid keeps control of authentication, models, tools, permissions and saved sessions; this bridge provides the interface.
 
-`src/droid-wordmark.svg` 来自 Factory 官方文档，仅用于识别 Droid 集成，不属于本项目 MIT 授权范围；Droid 名称和字标的权利仍属于 Factory。MIT 授权不授予任何第三方商标权。本项目与 Factory、Tern、omp 无官方关联或背书。
+Build and install with the commands above, restart Tern, open a new local zsh pane and run `droid` (case-insensitive unless the name is already in use). Use `/` for actions, `Cmd+V` to paste images, `/quit` or two quick presses of `Ctrl+C` to exit, and `command droid` for the official CLI. macOS Apple Silicon is the verified platform; Linux remains unverified. This is not a complete replacement for every Droid TUI feature.
 
-The bridge's own code is MIT-licensed. Dependencies retain their original licenses, and the Factory Droid wordmark is excluded from this project's MIT grant. No third-party trademark rights or official affiliation are implied. Build from source on your target platform; this repository does not publish an npm package (`private: true` prevents accidental npm publication).
+## 许可与致谢
+
+插件自有代码采用 [MIT License](LICENSE)。感谢 Tern、omp 和 Factory Droid；本项目是独立集成，不代表任何上游项目的官方产品或背书。
+
+上游依赖保留各自许可证，见 [第三方许可](dist/THIRD_PARTY_NOTICES.txt)。Droid 名称及官方字标属于 Factory，字标不包含在本项目的 MIT 授权中；MIT 不授予第三方商标权。

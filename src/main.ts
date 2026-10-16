@@ -103,9 +103,12 @@ async function run(): Promise<void> {
     onSubmit: submission => { void perform(() => submit(submission)); },
   });
   composer.editor.onEscape = () => { void perform(() => busy() ? backend.interrupt() : Promise.resolve()); };
+  const clearOrExit = composer.editor.onClear;
   composer.editor.onClear = () => {
+    clearOrExit?.();
+    if (closing) return;
+    composer.editor.clearDraft();
     if (busy()) void perform(() => backend.interrupt());
-    else composer.editor.clearDraft();
   };
   composer.editor.onExit = () => { void perform(() => command('quit')); };
   composer.editor.onSelectModel = composer.editor.onSelectModelTemporary = () => { void perform(() => command('model')); };
