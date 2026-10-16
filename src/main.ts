@@ -24,6 +24,7 @@ import { DroidWelcome } from './omp-welcome.js';
 import { isDroidWorking } from './work-state.js';
 import { DroidImageComposer, imageAdmissionError, type ImageSubmission } from './omp-images.js';
 import { dictionary } from './i18n.js';
+import { commandEntries, routeCommand, type CommandCatalog } from './omp-commands.js';
 
 const { values } = parseArgs({ options: {
   cwd: { type: 'string' }, 'data-dir': { type: 'string' }, droid: { type: 'string' },
@@ -78,7 +79,8 @@ async function run(): Promise<void> {
   let facts: ComposerFacts;
   let factsKey = '';
   let expanded = false;
-  let autocompleteCwd = '';
+  let autocompleteKey = '';
+  let autocompleteCatalog: CommandCatalog | undefined;
   const notice = new Text('');
   const welcome = new DroidWelcome(locale);
   const composer = new Composer({ preferences: { quiet: true, spellingAutocomplete: 'off', spellingTypoDetection: false }, exit: code => { process.exitCode = code; void shutdown(); } });
@@ -117,17 +119,6 @@ async function run(): Promise<void> {
   composer.editor.setCustomKeyHandler('ctrl+alt+shift+o', () => { void perform(() => dialogs.sessions()); });
   composer.editor.setCustomKeyHandler('ctrl+alt+shift+n', () => { void perform(() => command('new')); });
   composer.editor.setCustomKeyHandler('ctrl+o', () => { expanded = !expanded; transcript.setExpanded(expanded); changed(); });
-  const commands = [
-    { name: 'sessions', get description() { return dictionary(locale).sessions; } },
-    { name: 'new', description: 'Droid: new conversation' }, { name: 'resume', description: 'Droid: saved conversations' },
-    { name: 'model', description: 'Droid: select model' }, { name: 'reasoning', description: 'Droid: reasoning effort' },
-    { name: 'mode', description: 'Droid: Auto / Spec' }, { name: 'autonomy', description: 'Droid: approval policy' },
-    { name: 'rename', description: 'Droid: rename conversation' }, { name: 'fork', description: 'Droid: fork conversation' },
-    { name: 'compact', description: 'Droid: compact context (may use model quota)' }, { name: 'rewind', description: 'Droid: inspect rewind' },
-    { name: 'context', description: 'Droid: context usage breakdown' },
-    { name: 'retry', description: 'Droid: reconnect without replay' }, { name: 'language', description: 'Bridge: 中文 / English' },
-    { name: 'help', description: 'Bridge: conversation actions' }, { name: 'quit', description: 'Bridge: close client' },
-  ];
   const composerStyle = `${TSP_PREFIX}s;${JSON.stringify({
     name: 'droid-composer',
     css: `
@@ -195,16 +186,20 @@ async function run(): Promise<void> {
     const b = backend.state;
     const t = dictionary(locale);
     const activeCwd = b.session?.cwd || cwd;
-    if (activeCwd !== autocompleteCwd) {
-      autocompleteCwd = activeCwd;
+    const commandKey = JSON.stringify([activeCwd, b.session?.id, locale]);
+    if (commandKey !== autocompleteKey || autocompleteCatalog !== backend.catalog) {
+      autocompleteKey = commandKey;
+      autocompleteCatalog = backend.catalog;
+      const commands = commandEntries(locale, backend.catalog);
       composer.editor.setAutocompleteProvider(new CombinedAutocompleteProvider(commands, activeCwd));
     }
-    if (b.error !== observedBackendError) { observedBackendError = b.error; dismissedBackendError = null; }
-    const error = uiError || (b.error === dismissedBackendError ? null : b.error);
+    const backendError = b.error ?? backend.catalog.error;
+    if (backendError !== observedBackendError) { observedBackendError = backendError; dismissedBackendError = null; }
+    const error = uiError || (backendError === dismissedBackendError ? null : backendError);
     if (error !== bannerMessage) {
       banner?.dispose();
       bannerMessage = error;
-      banner = error ? new ErrorBannerComponent(error, () => { uiError = null; dismissedBackendError = b.error; changed(); }) : undefined;
+      banner = error ? new ErrorBannerComponent(error, () => { uiError = null; dismissedBackendError = backendError; changed(); }) : undefined;
     }
     welcome.sync(b.session?.title ?? '', locale);
     notice.setText(b.notice ?? '');
@@ -272,10 +267,26 @@ async function run(): Promise<void> {
   async function submit(submission: ImageSubmission): Promise<void> {
     const message = submission.text;
     if (!message.trim() && !submission.images.length) return;
-    const match = !submission.images.length && /^\/([a-z-]+)(?:\s+([\s\S]*))?$/.exec(message);
-    if (match && match[1] && commands.some(item => item.name === match[1])) {
+    if (submitting) throw new Error(text('正在发送，请稍候。', 'A submission is already in progress.'));
+    // Refresh before resolving convenience aliases: a newly discovered remote name wins.
+    if (message.trimStart().startsWith('/') && !message.trimStart().toLowerCase().startsWith('/bridge:') && !busy() && backend.state.phase === 'idle') {
+      const session = backend.state.session;
+      const scopeKey = JSON.stringify([session?.id, session?.cwd]);
+      submitting = true;
+      changed();
+      try { await backend.refreshCommands(); }
+      finally { submitting = false; changed(); }
+      if (JSON.stringify([backend.state.session?.id, backend.state.session?.cwd]) !== scopeKey) {
+        throw new Error(text('会话或工作目录已变化，请检查草稿后重试。', 'The session or working directory changed. Review the draft before trying again.'));
+      }
+    }
+    const route = routeCommand(message, backend.catalog);
+    if (route.kind === 'unknown') throw new Error(text('此命令不受 Droid bridge 支持。输入 /bridge:help 查看可用操作。', 'This command is not supported by the Droid bridge. Use /bridge:help for available actions.'));
+    if (route.kind === 'unavailable') throw new Error(backend.catalog.error ?? text('命令和技能正在加载，请稍后重试。', 'Commands and skills are loading. Try again shortly.'));
+    if (route.kind === 'local') {
+      if (submission.images.length) throw new Error(text('本地会话操作不接受图片附件。请先移除图片。', 'Local conversation actions do not accept images. Remove the attachments first.'));
       images.accept(submission);
-      await command(match[1], match[2]);
+      await command(route.name, route.argument);
       return;
     }
     if (busy() || backend.state.phase !== 'idle') throw new Error(text('当前无法发送。请先停止任务或重新连接会话。', 'Cannot send now. Stop the active work or reconnect the session.'));
@@ -292,8 +303,13 @@ async function run(): Promise<void> {
       case 'context': return dialogs.context();
       case 'resume': return argument?.trim() ? open(argument.trim()) : dialogs.sessions();
       case 'help': {
-        const selected = await dialogs.choose(text('Droid 会话操作', 'Droid conversation actions'), commands.filter(item => item.name !== 'help').map(item => ({ value: item.name, label: `/${item.name}`, description: item.description })));
-        if (selected) await command(selected);
+        const selected = await dialogs.choose(text('可用命令和会话操作', 'Available commands and conversation actions'), commandEntries(locale, backend.catalog)
+          .filter(item => item.name !== 'help' && item.name !== 'bridge:help').map(item => ({ value: item.name, label: `/${item.name}`, description: item.description })));
+        if (selected) {
+          const route = routeCommand(`/${selected}`, backend.catalog);
+          if (route.kind === 'local') await command(route.name);
+          else composer.editor.setText(`/${selected} `);
+        }
         return;
       }
       case 'new': {
@@ -354,6 +370,11 @@ async function run(): Promise<void> {
         return;
       }
       case 'retry': await backend.open(backend.state.session?.id); return;
+      case 'commands': {
+        await backend.refreshCommands();
+        if (backend.catalog.error) throw new Error(backend.catalog.error);
+        return;
+      }
       case 'language': {
         const value = argument ?? await dialogs.choose(t.language, [{ value: 'zh-CN', label: '简体中文' }, { value: 'en-US', label: 'English' }]);
         if (value !== 'zh-CN' && value !== 'en-US') return;

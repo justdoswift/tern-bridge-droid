@@ -292,6 +292,80 @@ var Transcript = class {
   }
 };
 
+// src/omp-commands.ts
+import { ListSkillsResultSchema } from "@factory/droid-sdk";
+var descriptions = {
+  sessions: ["\u9009\u62E9\u5386\u53F2\u4F1A\u8BDD", "Saved conversations"],
+  new: ["\u65B0\u5EFA\u4F1A\u8BDD", "New conversation"],
+  resume: ["\u6062\u590D\u4FDD\u5B58\u7684\u4F1A\u8BDD", "Resume a saved conversation"],
+  model: ["\u9009\u62E9\u6A21\u578B", "Select model"],
+  reasoning: ["\u9009\u62E9\u601D\u8003\u5F3A\u5EA6", "Reasoning effort"],
+  mode: ["Auto / Spec \u6A21\u5F0F", "Auto / Spec mode"],
+  autonomy: ["\u5BA1\u6279\u7B56\u7565", "Approval policy"],
+  rename: ["\u91CD\u547D\u540D\u4F1A\u8BDD", "Rename conversation"],
+  fork: ["\u5206\u53C9\u4F1A\u8BDD", "Fork conversation"],
+  compact: ["\u538B\u7F29\u4E0A\u4E0B\u6587\uFF08\u53EF\u80FD\u6D88\u8017\u6A21\u578B\u989D\u5EA6\uFF09", "Compact context (may use model quota)"],
+  rewind: ["\u67E5\u770B\u56DE\u9000\u9009\u9879", "Inspect rewind"],
+  context: ["\u4E0A\u4E0B\u6587\u7528\u91CF\u660E\u7EC6", "Context usage breakdown"],
+  retry: ["\u91CD\u65B0\u8FDE\u63A5\uFF0C\u4E0D\u91CD\u53D1\u6D88\u606F", "Reconnect without replay"],
+  commands: ["\u91CD\u65B0\u53D1\u73B0\u547D\u4EE4\u548C\u6280\u80FD", "Refresh commands and skills"],
+  language: ["\u4E2D\u6587 / English", "\u4E2D\u6587 / English"],
+  help: ["\u53EF\u7528\u547D\u4EE4\u548C\u4F1A\u8BDD\u64CD\u4F5C", "Available commands and conversation actions"],
+  quit: ["\u5173\u95ED\u5BA2\u6237\u7AEF", "Close client"]
+};
+function discoveredCommands(commands, skills) {
+  const result2 = /* @__PURE__ */ new Map();
+  const rows = record(commands).commands;
+  if (!Array.isArray(rows)) throw new Error("Invalid Droid command catalog.");
+  for (const value of rows) {
+    const command = record(value);
+    if (typeof command.name !== "string" || typeof command.description !== "string" || command.argumentHint !== void 0 && typeof command.argumentHint !== "string") throw new Error("Invalid Droid command metadata.");
+    if (!command.name || /[\s/]/.test(command.name)) continue;
+    result2.set(command.name.toLowerCase(), {
+      name: command.name,
+      description: command.description,
+      kind: "command",
+      ...command.argumentHint ? { argumentHint: command.argumentHint } : {}
+    });
+  }
+  for (const skill of ListSkillsResultSchema.parse(skills).skills) {
+    if (skill.enabled === false || skill.userInvocable === false || skill.disabledBy || !/^[a-z0-9-]+$/.test(skill.name) || !/[a-z0-9]/.test(skill.name) || skill.content === "") continue;
+    const key = skill.name.toLowerCase();
+    if (!result2.has(key)) result2.set(key, { name: skill.name, description: skill.description ?? "", kind: "skill" });
+  }
+  return [...result2.values()];
+}
+function commandEntries(locale, catalog) {
+  const zh2 = locale === "zh-CN";
+  const remote = catalog.status === "ready" ? catalog.entries : [];
+  const names = new Set(remote.map((item) => item.name.toLowerCase()));
+  return [
+    ...remote.filter((item) => !item.name.toLowerCase().startsWith("bridge:")).map((item) => ({
+      name: item.name,
+      description: `${item.kind === "skill" ? zh2 ? "\u6280\u80FD" : "Skill" : zh2 ? "Droid \u547D\u4EE4" : "Droid command"} \xB7 ${item.description || item.name}${item.argumentHint ? ` \xB7 ${item.argumentHint}` : ""}`
+    })),
+    ...Object.keys(descriptions).flatMap((name) => {
+      const description = `Bridge \xB7 ${descriptions[name][zh2 ? 0 : 1]}`;
+      return [{ name: `bridge:${name}`, description }, ...catalog.status === "ready" && !names.has(name) ? [{ name, description }] : []];
+    })
+  ];
+}
+function routeCommand(message, catalog) {
+  const trimmed = message.trimStart();
+  if (!trimmed.startsWith("/")) return { kind: "message" };
+  const match = /^\/([^\s]+)(?:\s+([\s\S]*))?$/.exec(trimmed);
+  if (!match) return { kind: "unknown" };
+  const name = match[1].toLowerCase();
+  if (name.startsWith("bridge:")) {
+    const local = name.slice(7);
+    return Object.hasOwn(descriptions, local) ? { kind: "local", name: local, argument: match[2] } : { kind: "unknown" };
+  }
+  if (catalog.status !== "ready") return { kind: "unavailable" };
+  if (catalog.entries.some((command) => command.name.toLowerCase() === name)) return { kind: "remote" };
+  if (Object.hasOwn(descriptions, name)) return { kind: "local", name, argument: match[2] };
+  return { kind: "unknown" };
+}
+
 // src/backend.ts
 var runtime = {
   create(options) {
@@ -389,6 +463,9 @@ var DroidBridge = class {
     needsInterrupt: false,
     workingState: null
   };
+  catalog = { status: "loading", entries: [], error: null };
+  catalogGeneration = 0;
+  commandDiscovery = null;
   scope = null;
   transcript = new Transcript();
   active = null;
@@ -401,6 +478,8 @@ var DroidBridge = class {
     try {
       const previous = this.scope;
       this.scope = null;
+      this.catalogGeneration++;
+      this.catalog = { status: "loading", entries: [], error: null };
       this.cancelTurn(previous, "Session changed. The previous prompt was not replayed.");
       if (previous) await this.dispose(previous);
       if (this.operation !== token) throw new BridgeFailure("Session opening was cancelled.");
@@ -443,6 +522,29 @@ var DroidBridge = class {
       throw failure(error, "Read context usage");
     }
   }
+  /** Read-only discovery; failures do not break an otherwise usable conversation. */
+  async refreshCommands() {
+    await this.discoverCommands(this.ready());
+  }
+  discoverCommands(scope) {
+    const generation = ++this.catalogGeneration;
+    const revision = scope.revision;
+    this.catalog = { status: "loading", entries: [], error: null };
+    this.changed();
+    const pending = (async () => {
+      try {
+        const [commands, skills] = await Promise.all([scope.client.listCommands(), scope.client.listSkills()]);
+        if (this.scope !== scope || scope.revision !== revision || generation !== this.catalogGeneration) return;
+        this.catalog = { status: "ready", entries: discoveredCommands(result(commands), result(skills)), error: null };
+      } catch (error) {
+        if (this.scope !== scope || scope.revision !== revision || generation !== this.catalogGeneration) return;
+        this.catalog = { status: "error", entries: [], error: failure(error, "Discover commands and skills").message };
+      }
+      this.changed();
+    })();
+    this.commandDiscovery = pending;
+    return pending;
+  }
   async send(text2, onAccepted, images) {
     const scope = this.ready();
     const sources = imageSources(images);
@@ -451,6 +553,10 @@ var DroidBridge = class {
     if (scope.unansweredSnapshots.size) throw new BridgeFailure(PENDING_SNAPSHOT_NOTICE);
     if (sources?.length && this.state.models.find((model) => model.id === this.state.session?.settings.modelId)?.noImageSupport === true) {
       throw new BridgeFailure("The selected Droid model does not support image attachments. Choose an image-capable model or remove the images.");
+    }
+    if (text2.trimStart().startsWith("/")) {
+      const route = routeCommand(text2, this.catalog);
+      if (route.kind !== "remote") throw new BridgeFailure(route.kind === "unavailable" ? this.catalog.error ?? "Commands and skills are still being discovered. Wait or use /bridge:commands." : "This slash command is not available through the Droid bridge. Use /bridge:help to see supported actions.");
     }
     const { promise: done, resolve: resolveDone, reject: rejectDone } = Promise.withResolvers();
     void done.catch(() => void 0);
@@ -633,6 +739,8 @@ var DroidBridge = class {
   async close() {
     const scope = this.scope;
     this.scope = null;
+    this.catalogGeneration++;
+    this.catalog = { status: "loading", entries: [], error: null };
     this.operation = null;
     this.cancelTurn(scope, "The bridge was closed. No prompt was replayed.");
     try {
@@ -706,6 +814,7 @@ var DroidBridge = class {
         if (this.scope === scope) this.state.notice = failure(error, "Discover models").message;
       }
       await this.context(scope);
+      await this.commandDiscovery;
       this.changed();
     } catch (error) {
       if (this.scope === scope) this.scope = null;
@@ -771,6 +880,7 @@ var DroidBridge = class {
       this.state.phase = "error";
     }
     this.showPrompt(scope);
+    void this.discoverCommands(scope);
   }
   notification(scope, value) {
     if (this.scope !== scope) return;
@@ -800,9 +910,12 @@ var DroidBridge = class {
     } else if (event.type === "settings_updated" && this.state.session) {
       this.state.session.settings = settings(event.settings, this.state.session.settings);
       this.state.models = normalizeModels(this.state.models.map((model) => ({ id: model.id, displayName: model.label, supportedReasoningEfforts: model.reasoningEfforts, defaultReasoningEffort: model.defaultReasoningEffort, noImageSupport: model.noImageSupport })), this.state.session.settings);
+      void this.discoverCommands(scope);
     } else if (event.type === "session_title_updated" && this.state.session && typeof event.title === "string") this.state.session.title = event.title;
-    else if (event.type === "session_working_directory_changed" && this.state.session && typeof event.cwd === "string") this.state.session.cwd = event.cwd;
-    else if (event.type === "session_token_usage_changed") this.usage(event.tokenUsage);
+    else if (event.type === "session_working_directory_changed" && this.state.session && typeof event.cwd === "string") {
+      this.state.session.cwd = event.cwd;
+      void this.discoverCommands(scope);
+    } else if (event.type === "session_token_usage_changed") this.usage(event.tokenUsage);
     else if (event.type === "permission_resolved" && typeof event.requestId === "string") {
       const index = scope.prompts.findIndex((prompt2) => prompt2.id === event.requestId && prompt2.kind === "approval");
       const prompt = scope.prompts[index];
@@ -876,6 +989,7 @@ var DroidBridge = class {
     if (success) this.state.error = null;
     if (this.active?.scope === scope) this.active.settle(this.state.phase === "error" ? new BridgeFailure(this.state.error ?? "Droid turn failed.") : void 0);
     void this.context(scope);
+    void this.discoverCommands(scope);
     this.changed();
   }
   permission(scope, value) {
@@ -984,12 +1098,16 @@ var DroidBridge = class {
     scope.loading = true;
     scope.events.length = 0;
     scope.targetId = scope.id;
+    this.catalogGeneration++;
+    this.catalog = { status: "loading", entries: [], error: null };
+    this.changed();
     try {
       const response = result(await scope.client.loadSession({ sessionId: scope.id, loadAllMessages: true }));
       if (this.scope !== scope) throw new BridgeFailure("The session changed while loading.");
       this.bind(scope);
       this.install(scope, response);
       await this.context(scope);
+      await this.commandDiscovery;
     } finally {
       scope.loading = false;
     }
@@ -1152,6 +1270,86 @@ function toolSourceParts(tool, args, languageForPath) {
     else parts.push({ kind: "plain", lines: [line] });
   }
   return hasSource ? parts : void 0;
+}
+
+// src/omp-skills.ts
+import { SkillMessageComponent } from "@oh-my-pi/pi-tui/chat/skill-message";
+var start = "<system-notification>\n";
+var end = "\n</skill>\n</system-notification>";
+var introduction = "Skills provide specialized capabilities and domain knowledge. The user has selected the following skill for immediate execution by typing /";
+var instruction = " in their message; that token invokes the skill and is not a path or part of the request. Begin following the skill's instructions now.";
+var header = /^<skill filePath="([^"<>\r\n]+)">\n<name>([a-z0-9-]+)<\/name>\n<description>([^\n]*)<\/description>\n/;
+function decodeAttribute(value) {
+  return value.replace(/&(amp|quot|lt|gt|#39);/g, (_, entity) => ({ amp: "&", quot: '"', lt: "<", gt: ">", "#39": "'" })[entity]);
+}
+function droidSkillPresentations(source) {
+  const first = source.indexOf(start);
+  if (first < 0 || first > 0 && source.slice(first - 2, first) !== "\n\n") return void 0;
+  const prompt = first === 0 ? "" : source.slice(0, first - 2);
+  if (prompt.includes("```") || prompt.includes("~~~")) return void 0;
+  const parsed = [];
+  let offset = first;
+  let trailing = "";
+  while (offset < source.length) {
+    if (!source.startsWith(start + introduction, offset)) return void 0;
+    const introEnd = source.indexOf("\n", offset + start.length);
+    if (introEnd < 0) return void 0;
+    const rest = source.slice(introEnd + 1);
+    const match = header.exec(rest);
+    if (!match) return void 0;
+    const [, path, name] = match;
+    if (!/[a-z0-9]/.test(name)) return void 0;
+    if (source.slice(offset + start.length, introEnd) !== introduction + name + instruction) return void 0;
+    const bodyStart = introEnd + 1 + match[0].length;
+    const close = source.indexOf(end, bodyStart);
+    if (close < 0 || !source.slice(bodyStart, close).trim()) return void 0;
+    const next = close + end.length;
+    const content = source.slice(offset, next);
+    if (source.slice(bodyStart, close).includes("<skill") || source.slice(bodyStart, close).includes("<system-notification>")) return void 0;
+    parsed.push({ name, path: decodeAttribute(path), args: "", content, lineCount: source.slice(bodyStart, close).split("\n").length });
+    if (next === source.length) break;
+    if (!source.startsWith("\n\n", next)) return void 0;
+    offset = next + 2;
+    if (!source.startsWith(start, offset)) {
+      trailing = source.slice(offset);
+      break;
+    }
+  }
+  if (!parsed.length || prompt && trailing || trailing && parsed.length !== 1) return void 0;
+  if (prompt) {
+    for (const skill of parsed) {
+      if (!new RegExp(`(^|\\s)/${skill.name}(?=$|[^a-zA-Z0-9_/-])`, "i").test(prompt)) return void 0;
+    }
+  }
+  const firstSkill = parsed[0];
+  firstSkill.args = trailing || (prompt.toLowerCase().startsWith(`/${firstSkill.name} `) ? prompt.slice(firstSkill.name.length + 2) : prompt.toLowerCase() === `/${firstSkill.name}` ? "" : prompt);
+  firstSkill.content = source;
+  return parsed;
+}
+var DroidSkillCard = class extends SkillMessageComponent {
+  constructor(presentation) {
+    super({
+      role: "custom",
+      customType: "skill",
+      content: presentation.content,
+      display: true,
+      timestamp: 0,
+      details: { name: presentation.name, path: presentation.path, args: presentation.args, lineCount: presentation.lineCount }
+    });
+    this.presentation = presentation;
+  }
+  projection;
+  describe() {
+    const original = super.describe();
+    if (original.k !== "card" || !original.p?.collapsed || !this.presentation.args.trim()) return original;
+    if (this.projection?.original === original) return this.projection.node;
+    const node5 = { ...original, p: { ...original.p, preview: { lines: 3 } } };
+    this.projection = { original, node: node5 };
+    return node5;
+  }
+};
+function skillMessage(presentation) {
+  return new DroidSkillCard(presentation);
 }
 
 // src/omp-transcript.ts
@@ -1329,11 +1527,11 @@ var DroidAssistantMessage = class extends AssistantMessageComponent {
   messagePersistenceKey() {
     return this.persistenceKey;
   }
-  sync(blocks, start, end, live, finalized) {
-    const count = end - start;
+  sync(blocks, start2, end2, live, finalized) {
+    const count = end2 - start2;
     let changed = this.snapshots.length !== count;
     for (let index = 0; index < count; index++) {
-      const block = blocks[start + index];
+      const block = blocks[start2 + index];
       const previous = this.snapshots[index];
       if (previous && sameBlock(previous, block)) continue;
       this.snapshots[index] = { ...block };
@@ -1370,6 +1568,7 @@ var DroidBlock = class extends Container {
   tool;
   toolInput;
   diff;
+  skills = [];
   live = false;
   expanded = false;
   imageRevision = 0;
@@ -1391,6 +1590,7 @@ var DroidBlock = class extends Container {
       this.code = void 0;
       this.tool = void 0;
       this.diff = void 0;
+      this.skills = [];
     }
     if (block.kind === "tool") this.syncTool(block, previous?.kind === "tool" ? previous : void 0);
     else if (block.kind === "image") {
@@ -1426,7 +1626,13 @@ var DroidBlock = class extends Container {
     } else if (this.role === "user") {
       if (changed) {
         this.disposeChildren();
-        this.addChild(new UserMessageComponent(block.text));
+        const skills = droidSkillPresentations(block.text);
+        this.skills = skills?.map(skillMessage) ?? [];
+        if (this.skills.length) for (const skill of this.skills) {
+          skill.setExpanded(this.expanded);
+          this.addChild(skill);
+        }
+        else this.addChild(new UserMessageComponent(block.text));
       }
     } else {
       if (!this.markdown) {
@@ -1478,6 +1684,7 @@ var DroidBlock = class extends Container {
     this.tool?.setExpanded(expanded);
     this.thinking?.setExpanded(expanded);
     this.code?.setExpanded(expanded);
+    for (const skill of this.skills) skill.setExpanded(expanded);
   }
   dispose() {
     if (this.currentImageKey) {
@@ -1535,7 +1742,7 @@ var DroidTranscript = class {
         let component = entry.blocks.get(key);
         let changed;
         if (assistant) {
-          const start = sourceIndex++;
+          const start2 = sourceIndex++;
           while (sourceIndex < message.blocks.length && isAssistantContent(message.blocks[sourceIndex])) sourceIndex++;
           if (!(component instanceof DroidAssistantMessage)) {
             component?.dispose();
@@ -1544,7 +1751,7 @@ var DroidTranscript = class {
           }
           changed = component.sync(
             message.blocks,
-            start,
+            start2,
             sourceIndex,
             live && sourceIndex === message.blocks.length,
             message.streaming === void 0 || sourceIndex < message.blocks.length
@@ -3144,7 +3351,8 @@ async function run() {
   let facts;
   let factsKey = "";
   let expanded = false;
-  let autocompleteCwd = "";
+  let autocompleteKey = "";
+  let autocompleteCatalog;
   const notice = new Text7("");
   const welcome = new DroidWelcome(locale);
   const composer = new Composer({ preferences: { quiet: true, spellingAutocomplete: "off", spellingTypoDetection: false }, exit: (code2) => {
@@ -3209,26 +3417,6 @@ async function run() {
     transcript.setExpanded(expanded);
     changed();
   });
-  const commands = [
-    { name: "sessions", get description() {
-      return dictionary(locale).sessions;
-    } },
-    { name: "new", description: "Droid: new conversation" },
-    { name: "resume", description: "Droid: saved conversations" },
-    { name: "model", description: "Droid: select model" },
-    { name: "reasoning", description: "Droid: reasoning effort" },
-    { name: "mode", description: "Droid: Auto / Spec" },
-    { name: "autonomy", description: "Droid: approval policy" },
-    { name: "rename", description: "Droid: rename conversation" },
-    { name: "fork", description: "Droid: fork conversation" },
-    { name: "compact", description: "Droid: compact context (may use model quota)" },
-    { name: "rewind", description: "Droid: inspect rewind" },
-    { name: "context", description: "Droid: context usage breakdown" },
-    { name: "retry", description: "Droid: reconnect without replay" },
-    { name: "language", description: "Bridge: \u4E2D\u6587 / English" },
-    { name: "help", description: "Bridge: conversation actions" },
-    { name: "quit", description: "Bridge: close client" }
-  ];
   const composerStyle = `${TSP_PREFIX}s;${JSON.stringify({
     name: "droid-composer",
     css: `
@@ -3303,21 +3491,25 @@ async function run() {
     const b = backend.state;
     const t = dictionary(locale);
     const activeCwd = b.session?.cwd || cwd;
-    if (activeCwd !== autocompleteCwd) {
-      autocompleteCwd = activeCwd;
+    const commandKey = JSON.stringify([activeCwd, b.session?.id, locale]);
+    if (commandKey !== autocompleteKey || autocompleteCatalog !== backend.catalog) {
+      autocompleteKey = commandKey;
+      autocompleteCatalog = backend.catalog;
+      const commands = commandEntries(locale, backend.catalog);
       composer.editor.setAutocompleteProvider(new CombinedAutocompleteProvider(commands, activeCwd));
     }
-    if (b.error !== observedBackendError) {
-      observedBackendError = b.error;
+    const backendError = b.error ?? backend.catalog.error;
+    if (backendError !== observedBackendError) {
+      observedBackendError = backendError;
       dismissedBackendError = null;
     }
-    const error = uiError || (b.error === dismissedBackendError ? null : b.error);
+    const error = uiError || (backendError === dismissedBackendError ? null : backendError);
     if (error !== bannerMessage) {
       banner?.dispose();
       bannerMessage = error;
       banner = error ? new ErrorBannerComponent(error, () => {
         uiError = null;
-        dismissedBackendError = b.error;
+        dismissedBackendError = backendError;
         changed();
       }) : void 0;
     }
@@ -3394,10 +3586,29 @@ async function run() {
   async function submit(submission) {
     const message = submission.text;
     if (!message.trim() && !submission.images.length) return;
-    const match = !submission.images.length && /^\/([a-z-]+)(?:\s+([\s\S]*))?$/.exec(message);
-    if (match && match[1] && commands.some((item) => item.name === match[1])) {
+    if (submitting) throw new Error(text2("\u6B63\u5728\u53D1\u9001\uFF0C\u8BF7\u7A0D\u5019\u3002", "A submission is already in progress."));
+    if (message.trimStart().startsWith("/") && !message.trimStart().toLowerCase().startsWith("/bridge:") && !busy() && backend.state.phase === "idle") {
+      const session = backend.state.session;
+      const scopeKey = JSON.stringify([session?.id, session?.cwd]);
+      submitting = true;
+      changed();
+      try {
+        await backend.refreshCommands();
+      } finally {
+        submitting = false;
+        changed();
+      }
+      if (JSON.stringify([backend.state.session?.id, backend.state.session?.cwd]) !== scopeKey) {
+        throw new Error(text2("\u4F1A\u8BDD\u6216\u5DE5\u4F5C\u76EE\u5F55\u5DF2\u53D8\u5316\uFF0C\u8BF7\u68C0\u67E5\u8349\u7A3F\u540E\u91CD\u8BD5\u3002", "The session or working directory changed. Review the draft before trying again."));
+      }
+    }
+    const route = routeCommand(message, backend.catalog);
+    if (route.kind === "unknown") throw new Error(text2("\u6B64\u547D\u4EE4\u4E0D\u53D7 Droid bridge \u652F\u6301\u3002\u8F93\u5165 /bridge:help \u67E5\u770B\u53EF\u7528\u64CD\u4F5C\u3002", "This command is not supported by the Droid bridge. Use /bridge:help for available actions."));
+    if (route.kind === "unavailable") throw new Error(backend.catalog.error ?? text2("\u547D\u4EE4\u548C\u6280\u80FD\u6B63\u5728\u52A0\u8F7D\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5\u3002", "Commands and skills are loading. Try again shortly."));
+    if (route.kind === "local") {
+      if (submission.images.length) throw new Error(text2("\u672C\u5730\u4F1A\u8BDD\u64CD\u4F5C\u4E0D\u63A5\u53D7\u56FE\u7247\u9644\u4EF6\u3002\u8BF7\u5148\u79FB\u9664\u56FE\u7247\u3002", "Local conversation actions do not accept images. Remove the attachments first."));
       images.accept(submission);
-      await command(match[1], match[2]);
+      await command(route.name, route.argument);
       return;
     }
     if (busy() || backend.state.phase !== "idle") throw new Error(text2("\u5F53\u524D\u65E0\u6CD5\u53D1\u9001\u3002\u8BF7\u5148\u505C\u6B62\u4EFB\u52A1\u6216\u91CD\u65B0\u8FDE\u63A5\u4F1A\u8BDD\u3002", "Cannot send now. Stop the active work or reconnect the session."));
@@ -3423,8 +3634,12 @@ async function run() {
       case "resume":
         return argument?.trim() ? open2(argument.trim()) : dialogs.sessions();
       case "help": {
-        const selected = await dialogs.choose(text2("Droid \u4F1A\u8BDD\u64CD\u4F5C", "Droid conversation actions"), commands.filter((item) => item.name !== "help").map((item) => ({ value: item.name, label: `/${item.name}`, description: item.description })));
-        if (selected) await command(selected);
+        const selected = await dialogs.choose(text2("\u53EF\u7528\u547D\u4EE4\u548C\u4F1A\u8BDD\u64CD\u4F5C", "Available commands and conversation actions"), commandEntries(locale, backend.catalog).filter((item) => item.name !== "help" && item.name !== "bridge:help").map((item) => ({ value: item.name, label: `/${item.name}`, description: item.description })));
+        if (selected) {
+          const route = routeCommand(`/${selected}`, backend.catalog);
+          if (route.kind === "local") await command(route.name);
+          else composer.editor.setText(`/${selected} `);
+        }
         return;
       }
       case "new": {
@@ -3488,6 +3703,11 @@ async function run() {
       case "retry":
         await backend.open(backend.state.session?.id);
         return;
+      case "commands": {
+        await backend.refreshCommands();
+        if (backend.catalog.error) throw new Error(backend.catalog.error);
+        return;
+      }
       case "language": {
         const value = argument ?? await dialogs.choose(t.language, [{ value: "zh-CN", label: "\u7B80\u4F53\u4E2D\u6587" }, { value: "en-US", label: "English" }]);
         if (value !== "zh-CN" && value !== "en-US") return;

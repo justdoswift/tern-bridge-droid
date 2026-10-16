@@ -3,6 +3,7 @@ import { TranscriptContainer } from '@oh-my-pi/pi-tui/chrome/transcript-containe
 import { UserMessageComponent } from '@oh-my-pi/pi-tui/chat/user-message';
 import { AssistantMessageComponent } from '@oh-my-pi/pi-tui/chat/assistant-message';
 import { ToolExecutionComponent } from '@oh-my-pi/pi-tui/chat/tool-execution';
+import type { SkillMessageComponent } from '@oh-my-pi/pi-tui/chat/skill-message';
 import { Markdown, fencedCode } from '@oh-my-pi/pi-tui/components/markdown';
 import { Disclosure } from '@oh-my-pi/pi-tui/components/disclosure';
 import { Image } from '@oh-my-pi/pi-tui/components/image';
@@ -16,6 +17,7 @@ import { fileRow } from '@oh-my-pi/pi-tui/tools/native-view';
 import { ensureThemeSync, getLanguageFromPath, getMarkdownTheme, getThemeEpoch, theme } from '@oh-my-pi/pi-tui/theme';
 import type { BackendState, ChatMessage, MessageBlock } from './contracts.js';
 import { toolSourceParts, type ToolSourcePart } from './tool-source.js';
+import { droidSkillPresentations, skillMessage } from './omp-skills.js';
 
 type ToolBlock = Extract<MessageBlock, { kind: 'tool' }>;
 
@@ -238,6 +240,7 @@ class DroidBlock extends Container {
   private tool: DroidToolCard | undefined;
   private toolInput: unknown;
   private diff: SharedDiff | undefined;
+  private skills: SkillMessageComponent[] = [];
   private live = false;
   private expanded = false;
   private imageRevision = 0;
@@ -268,6 +271,7 @@ class DroidBlock extends Container {
       this.code = undefined;
       this.tool = undefined;
       this.diff = undefined;
+      this.skills = [];
     }
     if (block.kind === 'tool') this.syncTool(block, previous?.kind === 'tool' ? previous : undefined);
     else if (block.kind === 'image') {
@@ -295,7 +299,13 @@ class DroidBlock extends Container {
       this.markdown.transientRenderCache = live;
     } else if (this.role === 'user') {
       // The original user bubble is immutable; only an actually revised block replaces it.
-      if (changed) { this.disposeChildren(); this.addChild(new UserMessageComponent(block.text)); }
+      if (changed) {
+        this.disposeChildren();
+        const skills = droidSkillPresentations(block.text);
+        this.skills = skills?.map(skillMessage) ?? [];
+        if (this.skills.length) for (const skill of this.skills) { skill.setExpanded(this.expanded); this.addChild(skill); }
+        else this.addChild(new UserMessageComponent(block.text));
+      }
     } else {
       if (!this.markdown) { this.markdown = new Markdown(block.text, 1, 0, getMarkdownTheme()); this.addChild(this.markdown); }
       else if (changed) this.markdown.setText(block.text);
@@ -336,6 +346,7 @@ class DroidBlock extends Container {
     this.tool?.setExpanded(expanded);
     this.thinking?.setExpanded(expanded);
     this.code?.setExpanded(expanded);
+    for (const skill of this.skills) skill.setExpanded(expanded);
   }
 
   override dispose(): void {

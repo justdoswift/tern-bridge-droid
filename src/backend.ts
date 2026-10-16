@@ -6,10 +6,11 @@ import {
 import type { BridgeBackend, BackendOptions, BackendState, ContextDetails, InputImage, ModelChoice, PendingApproval, PendingQuestion, QuestionAnswer, RewindPlan, SessionSummary, SettingsPatch, SettingsView } from './contracts.js';
 import { SessionLock, SessionLockError } from './session-lock.js';
 import { Transcript, record } from './transcript.js';
+import { discoveredCommands, routeCommand, type CommandCatalog } from './omp-commands.js';
 
 export type BridgeClient = Pick<DroidClient,
   'initializeSession' | 'loadSession' | 'addUserMessage' | 'interruptSession' | 'updateSessionSettings' |
-  'listModels' | 'getContextStats' | 'getContextBreakdown' | 'getRewindInfo' | 'executeRewind' | 'compactSession' | 'forkSession' |
+  'listModels' | 'listCommands' | 'listSkills' | 'getContextStats' | 'getContextBreakdown' | 'getRewindInfo' | 'executeRewind' | 'compactSession' | 'forkSession' |
   'renameSession' | 'onNotification' | 'onError' | 'setPermissionHandler' | 'clearPermissionHandler' |
   'setAskUserHandler' | 'clearAskUserHandler' | 'close' | 'isConnected'>;
 export interface BridgeRuntime {
@@ -145,6 +146,9 @@ export class DroidBridge implements BridgeBackend {
     phase: 'disconnected', session: null, messages: [], models: [], approval: null, question: null,
     error: null, notice: null, context: null, usage: null, needsInterrupt: false, workingState: null,
   };
+  catalog: CommandCatalog = { status: 'loading', entries: [], error: null };
+  private catalogGeneration = 0;
+  private commandDiscovery: Promise<void> | null = null;
   private scope: Scope | null = null;
   private transcript = new Transcript();
   private active: Turn | null = null;
@@ -160,6 +164,8 @@ export class DroidBridge implements BridgeBackend {
     try {
       const previous = this.scope;
       this.scope = null;
+      this.catalogGeneration++;
+      this.catalog = { status: 'loading', entries: [], error: null };
       this.cancelTurn(previous, 'Session changed. The previous prompt was not replayed.');
       if (previous) await this.dispose(previous);
       if (this.operation !== token) throw new BridgeFailure('Session opening was cancelled.');
@@ -198,6 +204,31 @@ export class DroidBridge implements BridgeBackend {
     }
   }
 
+  /** Read-only discovery; failures do not break an otherwise usable conversation. */
+  async refreshCommands(): Promise<void> {
+    await this.discoverCommands(this.ready());
+  }
+
+  private discoverCommands(scope: Scope): Promise<void> {
+    const generation = ++this.catalogGeneration;
+    const revision = scope.revision;
+    this.catalog = { status: 'loading', entries: [], error: null };
+    this.changed();
+    const pending = (async () => {
+      try {
+        const [commands, skills] = await Promise.all([scope.client.listCommands(), scope.client.listSkills()]);
+        if (this.scope !== scope || scope.revision !== revision || generation !== this.catalogGeneration) return;
+        this.catalog = { status: 'ready', entries: discoveredCommands(result(commands), result(skills)), error: null };
+      } catch (error) {
+        if (this.scope !== scope || scope.revision !== revision || generation !== this.catalogGeneration) return;
+        this.catalog = { status: 'error', entries: [], error: failure(error, 'Discover commands and skills').message };
+      }
+      this.changed();
+    })();
+    this.commandDiscovery = pending;
+    return pending;
+  }
+
   async send(text: string, onAccepted: () => void, images?: readonly InputImage[]): Promise<void> {
     const scope = this.ready();
     const sources = imageSources(images);
@@ -206,6 +237,12 @@ export class DroidBridge implements BridgeBackend {
     if (scope.unansweredSnapshots.size) throw new BridgeFailure(PENDING_SNAPSHOT_NOTICE);
     if (sources?.length && this.state.models.find(model => model.id === this.state.session?.settings.modelId)?.noImageSupport === true) {
       throw new BridgeFailure('The selected Droid model does not support image attachments. Choose an image-capable model or remove the images.');
+    }
+    if (text.trimStart().startsWith('/')) {
+      const route = routeCommand(text, this.catalog);
+      if (route.kind !== 'remote') throw new BridgeFailure(route.kind === 'unavailable'
+        ? this.catalog.error ?? 'Commands and skills are still being discovered. Wait or use /bridge:commands.'
+        : 'This slash command is not available through the Droid bridge. Use /bridge:help to see supported actions.');
     }
     const { promise: done, resolve: resolveDone, reject: rejectDone } = Promise.withResolvers<void>();
     // The transport may fail while addUserMessage is still awaiting its response.
@@ -355,6 +392,8 @@ export class DroidBridge implements BridgeBackend {
   async close(): Promise<void> {
     const scope = this.scope;
     this.scope = null;
+    this.catalogGeneration++;
+    this.catalog = { status: 'loading', entries: [], error: null };
     this.operation = null;
     this.cancelTurn(scope, 'The bridge was closed. No prompt was replayed.');
     try { if (scope) await this.dispose(scope); }
@@ -402,6 +441,7 @@ export class DroidBridge implements BridgeBackend {
         if (this.scope === scope) this.state.notice = failure(error, 'Discover models').message;
       }
       await this.context(scope);
+      await this.commandDiscovery;
       this.changed();
     } catch (error) {
       if (this.scope === scope) this.scope = null;
@@ -459,6 +499,7 @@ export class DroidBridge implements BridgeBackend {
     }
     if (scope.unansweredSnapshots.size) { this.state.notice = PENDING_SNAPSHOT_NOTICE; this.state.error = PENDING_SNAPSHOT_NOTICE; this.state.phase = 'error'; }
     this.showPrompt(scope);
+    void this.discoverCommands(scope);
   }
 
   private notification(scope: Scope, value: unknown): void {
@@ -491,8 +532,12 @@ export class DroidBridge implements BridgeBackend {
     } else if (event.type === 'settings_updated' && this.state.session) {
       this.state.session.settings = settings(event.settings, this.state.session.settings);
       this.state.models = normalizeModels(this.state.models.map(model => ({ id: model.id, displayName: model.label, supportedReasoningEfforts: model.reasoningEfforts, defaultReasoningEffort: model.defaultReasoningEffort, noImageSupport: model.noImageSupport })), this.state.session.settings);
+      void this.discoverCommands(scope);
     } else if (event.type === 'session_title_updated' && this.state.session && typeof event.title === 'string') this.state.session.title = event.title;
-    else if (event.type === 'session_working_directory_changed' && this.state.session && typeof event.cwd === 'string') this.state.session.cwd = event.cwd;
+    else if (event.type === 'session_working_directory_changed' && this.state.session && typeof event.cwd === 'string') {
+      this.state.session.cwd = event.cwd;
+      void this.discoverCommands(scope);
+    }
     else if (event.type === 'session_token_usage_changed') this.usage(event.tokenUsage);
     else if (event.type === 'permission_resolved' && typeof event.requestId === 'string') {
       const index = scope.prompts.findIndex(prompt => prompt.id === event.requestId && prompt.kind === 'approval');
@@ -564,6 +609,7 @@ export class DroidBridge implements BridgeBackend {
     if (success) this.state.error = null;
     if (this.active?.scope === scope) this.active.settle(this.state.phase === 'error' ? new BridgeFailure(this.state.error ?? 'Droid turn failed.') : undefined);
     void this.context(scope);
+    void this.discoverCommands(scope);
     this.changed();
   }
 
@@ -653,11 +699,15 @@ export class DroidBridge implements BridgeBackend {
     if (!scope.id || this.scope !== scope) throw new BridgeFailure('The session changed before it could be loaded.');
     this.cancelPrompts(scope);
     scope.loading = true; scope.events.length = 0; scope.targetId = scope.id;
+    this.catalogGeneration++;
+    this.catalog = { status: 'loading', entries: [], error: null };
+    this.changed();
     try {
       const response = result(await scope.client.loadSession({ sessionId: scope.id, loadAllMessages: true }));
       if (this.scope !== scope) throw new BridgeFailure('The session changed while loading.');
       this.bind(scope); this.install(scope, response);
       await this.context(scope);
+      await this.commandDiscovery;
     } finally { scope.loading = false; }
   }
 

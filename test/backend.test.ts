@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import type { TestContext } from 'node:test';
+import { setImmediate as nextTick } from 'node:timers/promises';
 import { DroidBridge, normalizeModels } from '../src/backend.js';
 import type { BridgeClient, BridgeRuntime } from '../src/backend.js';
 import type { InputImage } from '../src/contracts.js';
@@ -65,6 +66,8 @@ class FakeClient {
     return { result: structuredClone(snapshot) };
   }
   async listModels() { return { result: { models: this.modelChoices } }; }
+  async listCommands(): Promise<unknown> { return { result: { commands: [] } }; }
+  async listSkills(): Promise<unknown> { return { result: { skills: [] } }; }
   async getContextStats() { return { result: { used: 120, limit: 200_000 } }; }
   async getContextBreakdown(): Promise<unknown> {
     if (this.breakdownResponse) return this.breakdownResponse;
@@ -762,4 +765,91 @@ test('working labels follow current-session compaction and thinking, not foreign
   const current = clients.at(-1); assert.ok(current);
   current.crash();
   assert.deepEqual(tracker.sync(bridge.state), { active: false });
+});
+
+test('command discovery uses SDK effective metadata and native slash invocation keeps the exact submitted payload', async t => {
+  const { bridge, client } = await fixture(t, true, client => {
+    client.listCommands = async () => ({ result: { commands: [{ name: 'custom-check', description: 'Synthetic command', isExecutable: true }] } });
+    client.listSkills = async () => ({ result: { skills: [{ name: 'fixture-review', description: 'Synthetic review', location: 'project', filePath: '/fixture/SKILL.md', enabled: true, userInvocable: true, content: 'Synthetic body' }] } });
+  });
+  assert.equal(bridge.catalog.status, 'ready');
+  assert.deepEqual(bridge.catalog.entries.map(entry => [entry.name, entry.kind]), [['custom-check', 'command'], ['fixture-review', 'skill']]);
+  assert.equal(JSON.stringify(bridge.catalog).includes('Synthetic body'), false);
+  const text = '/fixture-review keep  exact\narguments';
+  let acceptedCount = 0;
+  const sending = bridge.send(text, () => { acceptedCount++; });
+  const sent = await client.added.promise;
+  assert.equal(sent.text, text, 'Droid resolves its own slash command; the bridge never synthesizes skill instructions');
+  assert.equal(acceptedCount, 0);
+  accepted(client, sent); complete(client, sent.messageId); await sending;
+  assert.equal(acceptedCount, 1);
+  assert.equal(bridge.state.messages.at(-1)?.blocks[0]?.kind, 'text');
+  await bridge.refreshCommands();
+  client.added = Promise.withResolvers<Sent>();
+  const commandText = '/custom-check exact script arguments';
+  const invoking = bridge.send(commandText, () => undefined);
+  const commandSent = await client.added.promise;
+  assert.equal(commandSent.text, commandText);
+  accepted(client, commandSent); complete(client, commandSent.messageId); await invoking;
+});
+
+test('failed discovery is truthful, clears stale entries and does not fail ordinary conversation', async t => {
+  const { bridge, client } = await fixture(t, true, client => {
+    client.listCommands = async () => ({ result: { commands: [{ name: 'previous-command', description: 'Synthetic stale command' }] } });
+  });
+  assert.equal(bridge.catalog.entries.length, 1);
+  client.listSkills = async () => { throw new Error('private skill body must never appear in an error'); };
+  await bridge.refreshCommands();
+  assert.equal(bridge.catalog.status, 'error');
+  assert.equal(bridge.catalog.entries.length, 0);
+  assert.match(bridge.catalog.error!, /Discover commands and skills/);
+  assert.equal(bridge.catalog.error!.includes('private skill body'), false);
+  assert.equal(bridge.state.phase, 'idle');
+  await assert.rejects(bridge.send('/unknown', () => undefined), /Discover commands/);
+  assert.equal(client.sent.length, 0);
+  const sending = bridge.send('Ordinary prose remains usable', () => undefined);
+  const sent = await client.added.promise;
+  accepted(client, sent); complete(client, sent.messageId); await sending;
+  client.listSkills = async () => ({ result: { skills: [] } });
+  await bridge.refreshCommands();
+  assert.equal(bridge.catalog.status, 'ready');
+  assert.equal(bridge.catalog.error, null);
+  await assert.rejects(bridge.send('/unsupported-cli-action', () => undefined), /not available/);
+  assert.equal(client.sent.length, 1);
+});
+
+test('cwd changes invalidate immediately and late discovery cannot restore skills from the old cwd', async t => {
+  const { bridge, client } = await fixture(t);
+  const old = Promise.withResolvers<unknown>();
+  client.listSkills = () => old.promise;
+  const pending = bridge.refreshCommands();
+  assert.equal(bridge.catalog.status, 'loading');
+  assert.equal(bridge.catalog.entries.length, 0);
+  client.listSkills = async () => ({ result: { skills: [{ name: 'new-cwd', location: 'project', filePath: '/new/SKILL.md' }] } });
+  client.emit({ type: 'session_working_directory_changed', cwd: '/new/project' });
+  await nextTick();
+  assert.equal(bridge.state.session?.cwd, '/new/project');
+  assert.deepEqual(bridge.catalog.entries.map(entry => entry.name), ['new-cwd']);
+  old.resolve({ result: { skills: [{ name: 'old-cwd', location: 'project', filePath: '/old/SKILL.md' }] } });
+  await pending;
+  assert.deepEqual(bridge.catalog.entries.map(entry => entry.name), ['new-cwd']);
+});
+
+test('session replacement and settings changes discard prior discovery even when cwd is unchanged', async t => {
+  const { bridge, client, clients } = await fixture(t);
+  const old = Promise.withResolvers<unknown>();
+  client.listSkills = () => old.promise;
+  const pending = bridge.refreshCommands();
+  await bridge.open('original');
+  old.resolve({ result: { skills: [{ name: 'previous-session', location: 'personal', filePath: '/fixture/old.md' }] } });
+  await pending;
+  assert.equal(bridge.catalog.entries.length, 0);
+  const current = clients.at(-1)!;
+  current.listSkills = async () => ({ result: { skills: [{ name: 'changed-settings', location: 'project', filePath: '/fixture/new.md' }] } });
+  current.emit({ type: 'settings_updated', settings: { modelId: 'changed' } });
+  assert.equal(bridge.catalog.status, 'loading');
+  await nextTick();
+  assert.deepEqual(bridge.catalog.entries.map(entry => entry.name), ['changed-settings']);
+  await bridge.close();
+  assert.equal(bridge.catalog.entries.length, 0);
 });

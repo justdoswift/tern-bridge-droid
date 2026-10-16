@@ -53,7 +53,7 @@ droid
 | 发送消息 | `Enter` |
 | 换行 | `Shift+Enter` 或 `Alt+Enter` |
 | 粘贴文字或图片（macOS） | `⌘V` |
-| 展开 / 收起工具输出与思考 | `Ctrl+O` |
+| 展开 / 收起工具输出、思考与 skill 详情 | `Ctrl+O` |
 | 停止任务 / 关闭当前面板 | `Esc` |
 | 清空草稿并请求停止任务 | `Ctrl+C` |
 | 退出插件、返回终端 | 连按两次 `Ctrl+C` |
@@ -73,7 +73,14 @@ droid
 | 重命名 / 分叉 / 回退 | `/rename` / `/fork` / `/rewind` |
 | 压缩上下文 | `/compact` |
 | 重新连接 / 切换界面语言 | `/retry` / `/language` |
+| 刷新自定义命令与 skill 列表 | `/bridge:commands` |
 | 查看操作 / 退出 | `/help` / `/quit` |
+
+菜单也会列出当前 Droid 会话可用的**自定义命令和手动调用的 skill**，输入名称即可筛选、补全，例如 `/code-review 检查这次修改`。禁用或仅供模型自动调用的 skill 不会出现在菜单中。新增或修改 skill 后，可用 `/bridge:commands` 刷新；读取失败会明确提示，不会把未知命令当普通消息发送。
+
+同名时优先调用 Droid 的自定义命令或 skill；插件自身的操作始终可以加 `bridge:` 前缀，例如 `/bridge:sessions`、`/bridge:help`。
+
+调用 skill 后，会话默认显示**收起的 skill 卡片和附加要求摘要**，不再铺开整篇指令。点击卡片标题或按 `Ctrl+O` 查看全文；恢复的历史消息也采用相同展示。这里只改变显示，Droid 执行和保存的原始内容不变。
 
 回退会先列出文件影响；**仅回退对话不会恢复文件**，恢复文件需要另行确认。压缩上下文可能调用模型并消耗 Droid 额度。重新连接不会自动重发上一条消息。
 
@@ -110,7 +117,7 @@ tern plugin install --force ./artifacts/package/tern-bridge-droid
 
 **支持 Droid 的所有功能吗？**
 
-不支持完整复制官方 TUI。Mission Control 和部分专有页面不在范围内；Spec 的“在新会话执行”目前不可用，可以在当前会话执行或显式分叉。恢复的审批如果已无法响应，需要回到官方客户端处理。
+不支持完整复制官方 TUI。`/` 菜单包含插件操作，以及 SDK 提供的自定义命令和可手动调用的 skill，不等于官方 CLI 的全部内置页面。Mission Control 和部分专有页面不在范围内；Spec 的“在新会话执行”目前不可用，可以在当前会话执行或显式分叉。恢复的审批如果已无法响应，需要回到官方客户端处理。
 
 <details>
 <summary>找不到 Bun 或 Droid 时，如何指定路径？</summary>
@@ -134,6 +141,8 @@ tern plugin install --force ./artifacts/package/tern-bridge-droid
 Use Factory Droid in Tern with the original omp conversation UI. Droid keeps control of authentication, models, tools, permissions and saved sessions; this bridge provides the interface.
 
 Build and install with the commands above, restart Tern, open a new local zsh pane and run `droid` (case-insensitive unless the name is already in use). Use `/` for actions, `Cmd+V` to paste images, `/quit` or two quick presses of `Ctrl+C` to exit, and `command droid` for the official CLI. macOS Apple Silicon is the verified platform; Linux remains unverified. This is not a complete replacement for every Droid TUI feature.
+
+The `/` menu includes Droid's available custom commands and manually invocable skills. Refresh discovery with `/bridge:commands`; disabled and automatic-only skills stay hidden. Droid commands take precedence over matching bridge aliases, while `/bridge:sessions`, `/bridge:help` and other namespaced bridge actions remain available. Skills appear as collapsed cards with an argument preview, including in restored history; click the header or press `Ctrl+O` to see the full instructions. Execution payloads and saved messages are unchanged.
 
 ## 许可与致谢
 

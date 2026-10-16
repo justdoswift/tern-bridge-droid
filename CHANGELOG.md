@@ -2,6 +2,10 @@
 
 ## 0.1.0 — Unreleased
 
+- `/` 菜单接入 Droid 当前会话的自定义命令和可手动调用的 skill；提供刷新入口与同名操作的 `/bridge:` 入口，发现失败或未知命令保留草稿并明确提示。
+- Skill 指令在新消息和恢复历史中默认收起，保留附加要求摘要，可点击或按 Ctrl+O 展开；不改变 Droid 执行和保存的原始内容。
+- Discover current Droid custom commands and manually invocable skills in the slash menu, with refresh, collision-safe `/bridge:` actions and explicit discovery/unknown-command errors that preserve the draft.
+- Collapse skill instructions in live and restored messages using the original omp skill card, retaining an argument preview and click/Ctrl+O expansion without changing execution or history payloads.
 - 修复连续两次 Ctrl+C 无法退出；保留原版 omp 的双击退出行为，并停止当前任务、清理未发送草稿。
 - Tern 本机 zsh 入口支持 `Droid`、`DROID` 及混合大小写，保留已有 alias、function 和独立同名程序；README 改为安装与日常使用指南。
 - Restore double-Ctrl-C exit through the original omp handler, with task interruption and draft cleanup.
