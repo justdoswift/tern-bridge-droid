@@ -1,6 +1,6 @@
 schema = 1
 id = "tern-bridge-droid"
-name = "tern-bridge-droid"
+name = "Tern Droid"
 version = "0.1.0"
 description = "Droid native conversations, tools, sessions and approvals in Tern."
 icon = "sparkle"

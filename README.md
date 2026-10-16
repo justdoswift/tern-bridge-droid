@@ -1,4 +1,4 @@
-# Tern Bridge for Droid
+# Tern Droid
 
 **在 Tern 里用 Droid，保留 omp 的对话体验。**
 
