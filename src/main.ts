@@ -124,11 +124,24 @@ async function run(): Promise<void> {
     { name: 'retry', description: 'Droid: reconnect without replay' }, { name: 'language', description: 'Bridge: 中文 / English' },
     { name: 'help', description: 'Bridge: conversation actions' }, { name: 'quit', description: 'Bridge: close client' },
   ];
+  const composerStyle = `${TSP_PREFIX}s;${JSON.stringify({
+    name: 'droid-composer',
+    css: `
+      .sf-place { display: none; }
+      [data-role='omp.composer.model'], [data-role='omp.composer.effort'] { align-self: center; }
+      /* Override the native chat button minimum without changing overlay buttons. */
+      [data-role='omp.composer.extras'] > [data-role='omp.btn'] {
+        box-sizing: border-box !important; height: 28px !important; min-height: 28px !important;
+        padding: 0 10px !important; font-family: var(--sans); font-size: 12.5px; font-weight: 500; line-height: 26px;
+      }
+      [data-role='omp.composer.extras'] > [data-role='omp.btn'] > .sf-text { line-height: 26px; }
+    `,
+  })}\x1b\\`;
   const nativeChange = onNativeRenderingChange(on => {
     if (on) {
       composer.ui.terminal.setTitle('Droid');
-      // Tern adds the directory chip; this stylesheet affects only this native surface.
-      composer.ui.terminal.write(`${TSP_PREFIX}s;{"name":"droid-composer","css":".sf-place{display:none}"}\x1b\\`);
+      // Directory visibility and control alignment affect only this native surface.
+      composer.ui.terminal.write(composerStyle);
     }
   });
 
@@ -207,6 +220,8 @@ async function run(): Promise<void> {
       const autonomyLabel = autonomy === 'off' ? t.autonomyOff : autonomy === 'low' ? t.autonomyLow
         : autonomy === 'medium' ? t.autonomyMedium : autonomy === 'high' ? t.autonomyHigh : autonomy || t.unknown;
       const autonomyTitle = `${t.autonomy}: ${autonomyLabel}`;
+      const autonomyValue = autonomy === 'off' ? 0 : autonomy === 'low' ? 1 / 3
+        : autonomy === 'medium' ? 2 / 3 : autonomy === 'high' ? 1 : null;
       // Keep recovery reachable when native width compression hides optional controls.
       const controls = ['error', 'disconnected'].includes(b.phase)
         ? [actionButton(t.reconnect, 'status.retry', { key: 'retry', title: t.reconnectHint })] : [
@@ -214,7 +229,10 @@ async function run(): Promise<void> {
           node('row', {
             role: 'omp.btn', gap: 'xs', align: 'center', aria: autonomyTitle, title: autonomyTitle,
             actions: { click: 'status.autonomy' },
-          }, [node('effort', { level: autonomy ?? '', aria: autonomyTitle }, undefined, 'level')], 'autonomy'),
+          }, [
+            node('text', { text: t.autonomyShort, wrap: 'none' }, undefined, 'label'),
+            node('meter', { value: autonomyValue, style: 'blocks', steps: 3, aria: autonomyTitle, title: autonomyTitle }, undefined, 'level'),
+          ], 'autonomy'),
         ];
       facts = {
         context: node('meter', { role: 'omp.composer.context', style: 'bar', actions: { click: 'status.context' }, aria: t.context,
@@ -222,7 +240,7 @@ async function run(): Promise<void> {
           ...(b.context && b.context.limit > 0 ? { label: `${Math.round(b.context.used / b.context.limit * 100)}%` } : {}),
           title: `${t.context}: ${b.context ? `${b.context.used.toLocaleString(locale)} / ${b.context.limit.toLocaleString(locale)}` : t.unknown}` }, undefined, 'context'),
         model: { spans: [span(`Droid · ${selected?.label || settings?.modelId || t.default}`)], title: t.model },
-        extras: node('row', { role: 'omp.composer.extras', grow: 1, gap: 'xs', align: 'center' }, controls, 'extras'),
+        extras: node('row', { role: 'omp.composer.extras', grow: 1, gap: 'sm', align: 'center' }, controls, 'extras'),
         usage: EMPTY_NODE,
       };
     }

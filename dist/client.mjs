@@ -1631,6 +1631,7 @@ var en = {
   mode: "Mode",
   autonomy: "Autonomy",
   default: "Default",
+  autonomyShort: "Autonomy",
   autonomyOff: "Off",
   autonomyLow: "Low",
   autonomyMedium: "Medium",
@@ -1733,6 +1734,7 @@ var zh = {
   mode: "\u6A21\u5F0F",
   autonomy: "\u81EA\u4E3B\u6743\u9650",
   default: "\u9ED8\u8BA4",
+  autonomyShort: "\u6743\u9650",
   autonomyOff: "\u5173\u95ED",
   autonomyLow: "\u4F4E",
   autonomyMedium: "\u4E2D",
@@ -3137,10 +3139,23 @@ async function run() {
     { name: "help", description: "Bridge: conversation actions" },
     { name: "quit", description: "Bridge: close client" }
   ];
+  const composerStyle = `${TSP_PREFIX}s;${JSON.stringify({
+    name: "droid-composer",
+    css: `
+      .sf-place { display: none; }
+      [data-role='omp.composer.model'], [data-role='omp.composer.effort'] { align-self: center; }
+      /* Override the native chat button minimum without changing overlay buttons. */
+      [data-role='omp.composer.extras'] > [data-role='omp.btn'] {
+        box-sizing: border-box !important; height: 28px !important; min-height: 28px !important;
+        padding: 0 10px !important; font-family: var(--sans); font-size: 12.5px; font-weight: 500; line-height: 26px;
+      }
+      [data-role='omp.composer.extras'] > [data-role='omp.btn'] > .sf-text { line-height: 26px; }
+    `
+  })}\x1B\\`;
   const nativeChange = onNativeRenderingChange((on) => {
     if (on) {
       composer.ui.terminal.setTitle("Droid");
-      composer.ui.terminal.write(`${TSP_PREFIX}s;{"name":"droid-composer","css":".sf-place{display:none}"}\x1B\\`);
+      composer.ui.terminal.write(composerStyle);
     }
   });
   function busy() {
@@ -3232,6 +3247,7 @@ async function run() {
       const autonomy = settings2?.autonomyLevel;
       const autonomyLabel = autonomy === "off" ? t.autonomyOff : autonomy === "low" ? t.autonomyLow : autonomy === "medium" ? t.autonomyMedium : autonomy === "high" ? t.autonomyHigh : autonomy || t.unknown;
       const autonomyTitle = `${t.autonomy}: ${autonomyLabel}`;
+      const autonomyValue = autonomy === "off" ? 0 : autonomy === "low" ? 1 / 3 : autonomy === "medium" ? 2 / 3 : autonomy === "high" ? 1 : null;
       const controls = ["error", "disconnected"].includes(b.phase) ? [actionButton2(t.reconnect, "status.retry", { key: "retry", title: t.reconnectHint })] : [
         actionButton2(mode, "status.mode", { key: "mode", title: `${t.mode}: ${mode}` }),
         node4("row", {
@@ -3241,7 +3257,10 @@ async function run() {
           aria: autonomyTitle,
           title: autonomyTitle,
           actions: { click: "status.autonomy" }
-        }, [node4("effort", { level: autonomy ?? "", aria: autonomyTitle }, void 0, "level")], "autonomy")
+        }, [
+          node4("text", { text: t.autonomyShort, wrap: "none" }, void 0, "label"),
+          node4("meter", { value: autonomyValue, style: "blocks", steps: 3, aria: autonomyTitle, title: autonomyTitle }, void 0, "level")
+        ], "autonomy")
       ];
       facts = {
         context: node4("meter", {
@@ -3254,7 +3273,7 @@ async function run() {
           title: `${t.context}: ${b.context ? `${b.context.used.toLocaleString(locale)} / ${b.context.limit.toLocaleString(locale)}` : t.unknown}`
         }, void 0, "context"),
         model: { spans: [span2(`Droid \xB7 ${selected?.label || settings2?.modelId || t.default}`)], title: t.model },
-        extras: node4("row", { role: "omp.composer.extras", grow: 1, gap: "xs", align: "center" }, controls, "extras"),
+        extras: node4("row", { role: "omp.composer.extras", grow: 1, gap: "sm", align: "center" }, controls, "extras"),
         usage: EMPTY_NODE3
       };
     }
