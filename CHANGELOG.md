@@ -2,6 +2,8 @@
 
 ## 0.1.0 — Unreleased
 
+- 新增终端安装脚本：支持 `install`、`update`、`uninstall`，检查依赖后从 main 构建；更新构建成功才替换，卸载保留插件配置、账号和会话数据，不修改 Shell 配置。
+- Add a curl-friendly installer with install/update/uninstall actions, prerequisite checks and main-branch builds. Replace packages only after successful builds; preserve plugin settings, accounts, sessions and shell profiles.
 - `/` 菜单接入 Droid 当前会话的自定义命令和可手动调用的 skill；提供刷新入口与同名操作的 `/bridge:` 入口，发现失败或未知命令保留草稿并明确提示。
 - Skill 指令在新消息和恢复历史中默认收起，保留附加要求摘要，可点击或按 Ctrl+O 展开；不改变 Droid 执行和保存的原始内容。
 - Discover current Droid custom commands and manually invocable skills in the slash menu, with refresh, collision-safe `/bridge:` actions and explicit discovery/unknown-command errors that preserve the draft.
