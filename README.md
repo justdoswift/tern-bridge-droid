@@ -2,6 +2,8 @@
 
 让 Droid 使用 **omp 原版 UI 组件**在 Tern 中对话：`Composer` 输入区、助手消息、用户气泡、工具卡片、会话选择器、审批和 AskUser。插件负责把 Droid 的数据及操作绑定到这些组件，不自行重画聊天页面，不使用 WebView，也不抓取 Droid TUI 字符。
 
+[GitHub](https://github.com/justdoswift/tern-bridge-droid) · [问题反馈 / Issues](https://github.com/justdoswift/tern-bridge-droid/issues) · [Pi 版本](https://github.com/justdoswift/tern-bridge-pi)
+
 ## 环境
 
 - Bun 1.3.14 或更新版本（运行客户端）。
@@ -32,9 +34,11 @@
 
 ## 构建和安装
 
-在本仓库目录运行：
+从公开仓库克隆，并在目标平台构建：
 
 ```sh
+git clone https://github.com/justdoswift/tern-bridge-droid.git
+cd tern-bridge-droid
 npm ci --ignore-scripts
 npm run check
 npm test
@@ -155,3 +159,11 @@ bun dist/client.mjs --cwd . --data-dir ./artifacts/development-data
 可选参数：`--session ID`、`--pick-session`、`--locale zh-CN|en-US`、`--droid PATH`。`--help` 不连接 Droid；在非 Tern 终端中启动会明确失败，不生成伪造的回复或降级成假聊天界面。
 
 实现分为 Luau 启动器/标签活动样式、窗格内 zsh 命令入口、原版 omp UI 的数据/操作绑定、Droid 协议与会话控制、历史消息归一化和跨进程会话锁。行为测试覆盖协议身份、消息合并、审批与取消、回退计划、锁归属、运行步骤及真实原组件的图片草稿与键盘退出生命周期；实际 Tern 检查覆盖原版组件呈现、会话恢复、中文/多行输入、审批、AskUser、图片附件、任务工作栏和错误恢复。命令入口通过隔离安装检查同窗格启动、工作目录、参数/管道透传、官方 CLI 绕过，以及自定义 `ZDOTDIR`、alias/function 的保留。协议夹具不证明模型质量；仅一次已授权的真实 Droid 工具调用用于验证端到端连接，之后不重复付费请求。
+
+## 开源许可 / License
+
+插件自有代码采用 [MIT License](LICENSE)。`@oh-my-pi/pi-tui`、`@factory/droid-sdk` 及其传递依赖保留各自的许可证；完整构建包保留原许可文件，汇总见 [`dist/THIRD_PARTY_NOTICES.txt`](dist/THIRD_PARTY_NOTICES.txt)。
+
+`src/droid-wordmark.svg` 来自 Factory 官方文档，仅用于识别 Droid 集成，不属于本项目 MIT 授权范围；Droid 名称和字标的权利仍属于 Factory。MIT 授权不授予任何第三方商标权。本项目与 Factory、Tern、omp 无官方关联或背书。
+
+The bridge's own code is MIT-licensed. Dependencies retain their original licenses, and the Factory Droid wordmark is excluded from this project's MIT grant. No third-party trademark rights or official affiliation are implied. Build from source on your target platform; this repository does not publish an npm package (`private: true` prevents accidental npm publication).

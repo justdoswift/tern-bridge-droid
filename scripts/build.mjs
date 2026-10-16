@@ -67,7 +67,7 @@ for (const { version, source, metadata } of [...packages.values()].sort((a, b) =
   notices.push(`${name} ${version}\nLicense: ${typeof metadata.license === 'string' ? metadata.license : JSON.stringify(metadata.license)}\n\n${license}`);
 }
 // Normalize only the aggregate text file; every upstream license remains verbatim in the runtime tree.
-const noticeText = (notices.join('\n\n' + '='.repeat(72) + '\n\n') + '\n').replace(/\r\n/g, '\n').replace(/[ \t]+$/gm, '');
+const noticeText = notices.join('\n\n' + '='.repeat(72) + '\n\n').replace(/\r\n/g, '\n').replace(/[ \t]+$/gm, '').trimEnd() + '\n';
 await writeFile(join(dist, 'THIRD_PARTY_NOTICES.txt'), noticeText);
 await writeFile(join(dist, 'runtime.json'), JSON.stringify({ platform: process.platform, arch: process.arch, sharedUI: manifest.dependencies['@oh-my-pi/pi-tui'] }, null, 2) + '\n');
 process.stdout.write(`Built ${relative(root, join(dist, 'client.mjs'))} with original omp UI (${process.platform}-${process.arch})\n`);

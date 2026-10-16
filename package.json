@@ -2,6 +2,14 @@
   "name": "tern-bridge-droid",
   "version": "0.1.0",
   "private": true,
+  "description": "Factory Droid in Tern with original omp UI components.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/justdoswift/tern-bridge-droid.git"
+  },
+  "homepage": "https://github.com/justdoswift/tern-bridge-droid#readme",
+  "bugs": { "url": "https://github.com/justdoswift/tern-bridge-droid/issues" },
   "type": "module",
   "engines": { "node": ">=22", "bun": ">=1.3.14" },
   "scripts": {
