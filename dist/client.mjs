@@ -3311,7 +3311,7 @@ var { values } = parseArgs({ options: {
   version: { type: "boolean" }
 } });
 if (values.help || values.version) {
-  process.stdout.write(values.version ? "tern-bridge-droid 0.1.0\n" : "tern-bridge-droid \u2014 Droid with the original omp UI components\n\nUsage: bun dist/client.mjs [--cwd DIR] [--data-dir DIR] [--session ID | --pick-session]\n       [--droid PATH] [--locale zh-CN|en-US]\n\nRequires Bun 1.3.14+, Tern native surfaces and an authenticated Droid CLI.\nNo model request is made until you send a message or explicitly compact context.\n");
+  process.stdout.write(values.version ? "tern-bridge-droid 0.1.1\n" : "tern-bridge-droid \u2014 Droid with the original omp UI components\n\nUsage: bun dist/client.mjs [--cwd DIR] [--data-dir DIR] [--session ID | --pick-session]\n       [--droid PATH] [--locale zh-CN|en-US]\n\nRequires Bun 1.3.14+, Tern native surfaces and an authenticated Droid CLI.\nNo model request is made until you send a message or explicitly compact context.\n");
 } else await run();
 async function run() {
   if (values.locale && values.locale !== "zh-CN" && values.locale !== "en-US") throw new Error("--locale must be zh-CN or en-US");

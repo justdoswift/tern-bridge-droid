@@ -1,7 +1,7 @@
 schema = 1
 id = "tern-bridge-droid"
 name = "Tern Droid"
-version = "0.1.0"
+version = "0.1.1"
 description = "Droid native conversations, tools, sessions and approvals in Tern."
 icon = "sparkle"
 host = "host.luau"

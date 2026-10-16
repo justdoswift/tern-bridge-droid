@@ -32,7 +32,7 @@ const { values } = parseArgs({ options: {
   help: { type: 'boolean', short: 'h' }, version: { type: 'boolean' },
 } });
 if (values.help || values.version) {
-  process.stdout.write(values.version ? 'tern-bridge-droid 0.1.0\n' :
+  process.stdout.write(values.version ? 'tern-bridge-droid 0.1.1\n' :
     'tern-bridge-droid — Droid with the original omp UI components\n\n' +
     'Usage: bun dist/client.mjs [--cwd DIR] [--data-dir DIR] [--session ID | --pick-session]\n' +
     '       [--droid PATH] [--locale zh-CN|en-US]\n\n' +
